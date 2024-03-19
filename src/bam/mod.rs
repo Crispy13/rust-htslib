@@ -15,6 +15,9 @@ pub mod record;
 #[cfg(feature = "serde_feature")]
 pub mod record_serde;
 
+use lazy_static::lazy_static;
+use regex::Regex;
+use std::collections::HashMap;
 use std::ffi;
 use std::os::raw::c_char;
 use std::path::Path;
@@ -22,6 +25,7 @@ use std::rc::Rc;
 use std::slice;
 use std::str;
 
+use linear_map::LinearMap;
 use url::Url;
 
 use crate::errors::{Error, Result};
@@ -35,6 +39,8 @@ pub use crate::bam::record::Record;
 use hts_sys::{hts_fmt_option, sam_fields};
 use std::convert::{TryFrom, TryInto};
 use std::mem::MaybeUninit;
+
+use self::record::SAMReadGroupRecord;
 
 /// # Safety
 ///
@@ -1362,10 +1368,39 @@ fn itr_next(
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct HeaderMap {
+    inner: HashMap<String, Vec<LinearMap<String, String>>>,
+}
+
+impl HeaderMap {
+    const HD: &'static str = "HD";
+    const SO: &'static str = "SO";
+
+    pub fn get_read_groups(&self) -> Option<Vec<SAMReadGroupRecord>> {
+        self.inner.get(SAMReadGroupRecord::RG).and_then(|v| {
+            Some(
+                v.into_iter()
+                    .map(|e| SAMReadGroupRecord::from_header_map(e))
+                    .collect::<Vec<_>>(),
+            )
+        })
+    }
+
+    pub fn get_sort_order(&self) -> Option<&str> {
+        self.inner
+            .get(Self::HD)
+            .and_then(|e| e.first())
+            .and_then(|e| e.get(Self::SO))
+            .and_then(|e| Some(e.as_str()))
+    }
+}
+
 #[derive(Debug)]
 pub struct HeaderView {
     inner: *mut htslib::bam_hdr_t,
     owned: bool,
+    header_map: HeaderMap,
 }
 
 impl HeaderView {
@@ -1401,7 +1436,15 @@ impl HeaderView {
 
     /// Create a new HeaderView from the underlying Htslib type, and own it.
     pub fn new(inner: *mut htslib::bam_hdr_t) -> Self {
-        HeaderView { inner, owned: true }
+        let header_map = HeaderMap {
+            inner: Self::make_hashmap(inner),
+        };
+        // let header_map:HashMap<String, Vec<LinearMap<String, String>>> = HashMap::default();
+        HeaderView {
+            inner,
+            owned: true,
+            header_map,
+        }
     }
 
     #[inline]
@@ -1475,6 +1518,63 @@ impl HeaderView {
             ffi::CStr::from_ptr(rebuilt_hdr).to_bytes()
         }
     }
+
+    pub fn header_map(&self) -> &HeaderMap {
+        &self.header_map
+    }
+
+    /// This returns a header as a HashMap.
+    /// Comment lines starting with "@CO" will NOT be included in the HashMap.
+    /// Comment lines can be obtained by the `comments` function.
+    pub fn make_hashmap(
+        inner: *mut htslib::bam_hdr_t,
+    ) -> HashMap<String, Vec<LinearMap<String, String>>> {
+        let mut header_map = HashMap::default();
+
+        lazy_static! {
+            static ref REC_TYPE_RE: Regex = Regex::new(r"@([A-Z][A-Z])").unwrap();
+            static ref TAG_RE: Regex = Regex::new(r"([A-Za-z][A-Za-z0-9]):([ -~]*)").unwrap();
+        }
+
+        let inner_bytes = unsafe {
+            let rebuilt_hdr = htslib::sam_hdr_str(inner);
+            if rebuilt_hdr.is_null() {
+                b""
+            } else {
+                ffi::CStr::from_ptr(rebuilt_hdr).to_bytes()
+            }
+        };
+
+        let header_string = std::str::from_utf8(inner_bytes).unwrap();
+
+        for line in header_string.split('\n').filter(|x| !x.is_empty()) {
+            let parts: Vec<_> = line.split('\t').filter(|x| !x.is_empty()).collect();
+            // assert!(rec_type_re.is_match(parts[0]));
+            let record_type = REC_TYPE_RE
+                .captures(parts[0])
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_str()
+                .to_owned();
+            if record_type.eq("CO") {
+                continue;
+            }
+            let mut field = LinearMap::default();
+            for part in parts.iter().skip(1) {
+                let cap = TAG_RE.captures(part).unwrap();
+                let tag = cap.get(1).unwrap().as_str().to_owned();
+                let value = cap.get(2).unwrap().as_str().to_owned();
+                field.insert(tag, value);
+            }
+            header_map
+                .entry(record_type)
+                .or_insert_with(Vec::new)
+                .push(field);
+        }
+
+        header_map
+    }
 }
 
 impl Clone for HeaderView {
@@ -1482,6 +1582,7 @@ impl Clone for HeaderView {
         HeaderView {
             inner: unsafe { htslib::sam_hdr_dup(self.inner) },
             owned: true,
+            header_map: self.header_map.clone(),
         }
     }
 }

@@ -17,6 +17,7 @@ use std::str;
 use std::u32;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use linear_map::LinearMap;
 
 use crate::bam::Error;
 use crate::bam::HeaderView;
@@ -175,6 +176,13 @@ impl Record {
 
     pub fn set_header(&mut self, header: Rc<HeaderView>) {
         self.header = Some(header);
+    }
+
+    pub fn header(&self) -> Option<Rc<HeaderView>> {
+        match &self.header {
+            Some(ref v) => Some(Rc::clone(v)),
+            None => None,
+        }
     }
 
     pub(super) fn data(&self) -> &[u8] {
@@ -2450,6 +2458,128 @@ impl<'a> Iterator for BaseModificationsIter<'a> {
     }
 }
 
+/**
+ * Header information about a read group.
+ *
+ * This struct is based on SAMReadGroupRecord of htsjdk(Java).
+ */
+#[derive(Debug)]
+pub struct SAMReadGroupRecord<'m> {
+    m_read_group_id: &'m str,
+    inner_map: &'m LinearMap<String, String>,
+}
+
+/* Platform values for the @RG-PL tag */
+enum PlatformValue {
+    /// Deprecated. Use `PlatformValue::DNBSEQ` instead.
+    BGI,
+
+    /** Capillary */
+    CAPILLARY,
+
+    /** MGI/BGI */
+    DNBSEQ,
+
+    /** Element Biosciences */
+    ELEMENT,
+
+    /** Helicos Biosciences */
+    HELICOS,
+
+    /** Illumina */
+    ILLUMINA,
+
+    /** Iontorrent */
+    IONTORRENT,
+
+    /** 454 Life Sciences */
+    LS454,
+
+    /** Oxford Nanopore */
+    ONT,
+
+    /** Deprecated. OTHER is not an official value.  It is recommended to omit PL if it is not in this list or is unknown. */
+    OTHER,
+
+    /** Pacific Biotechnology */
+    PACBIO,
+
+    /** Singular Genomics */
+    SINGULAR,
+
+    /** Life Technologies */
+    SOLID,
+
+    /** Ultima Genomics */
+    ULTIMA,
+}
+impl<'m> SAMReadGroupRecord<'m> {
+    pub(crate) const RG: &'static str = "RG";
+    const READ_GROUP_ID_TAG: &'static str = "ID";
+    const SEQUENCING_CENTER_TAG: &'static str = "CN";
+    const DESCRIPTION_TAG: &'static str = "DS";
+    const DATE_RUN_PRODUCED_TAG: &'static str = "DT";
+    const FLOW_ORDER_TAG: &'static str = "FO";
+    const KEY_SEQUENCE_TAG: &'static str = "KS";
+    const LIBRARY_TAG: &'static str = "LB";
+    const PROGRAM_GROUP_TAG: &'static str = "PG";
+    const PREDICTED_MEDIAN_INSERT_SIZE_TAG: &'static str = "PI";
+    const PLATFORM_TAG: &'static str = "PL";
+    const PLATFORM_MODEL_TAG: &'static str = "PM";
+    const PLATFORM_UNIT_TAG: &'static str = "PU";
+    const READ_GROUP_SAMPLE_TAG: &'static str = "SM";
+    const BARCODE_TAG: &'static str = "BC";
+
+    pub fn from_header_map(
+        read_group_map: &'m LinearMap<String, String>,
+    ) -> SAMReadGroupRecord<'m> {
+        Self {
+            m_read_group_id:read_group_map.get(Self::READ_GROUP_ID_TAG).unwrap(),
+            inner_map: read_group_map,
+        }
+    }
+
+    pub fn get_read_group_id(&self) -> &str {
+        self.m_read_group_id
+    }
+
+    pub fn get_sample(&self) -> Option<&str> {
+        self.inner_map
+            .get(Self::READ_GROUP_SAMPLE_TAG)
+            .map(|e| e.as_str())
+    }
+
+    pub fn get_library(&self) -> Option<&str> {
+        self.inner_map.get(Self::LIBRARY_TAG).map(|e| e.as_str())
+    }
+
+    pub fn get_platform_unit(&self) -> Option<&str> {
+        self.inner_map
+            .get(Self::PLATFORM_UNIT_TAG)
+            .map(|e| e.as_str())
+    }
+
+    pub fn get_platform(&self) -> Option<&str> {
+        self.inner_map.get(Self::PLATFORM_TAG).map(|e| e.as_str())
+    }
+
+    pub fn get_flow_order(&self) -> Option<&str> {
+        self.inner_map.get(Self::FLOW_ORDER_TAG).map(|e| e.as_str())
+    }
+
+    pub fn get_key_sequence(&self) -> Option<&str> {
+        self.inner_map
+            .get(Self::KEY_SEQUENCE_TAG)
+            .map(|e| e.as_str())
+    }
+
+    pub fn id(&self) -> Option<&str> {
+        self.inner_map
+            .get(Self::READ_GROUP_ID_TAG)
+            .map(|e| e.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2896,9 +3026,93 @@ mod alignment_cigar_tests {
     }
 }
 
+pub trait ReadGroupRecord {
+    fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error>;
+}
+
+impl ReadGroupRecord for Record {
+    fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error> {
+        let rg = match self.aux(SAMReadGroupRecord::RG.as_bytes()) {
+            Ok(aux) => match aux {
+                Aux::String(v) => v,
+                _ => Err(Error::BamAuxParsingError)?,
+            },
+            Err(err) => Err(err)?,
+        };
+
+        let rg_info_map = self
+            .header
+            .as_ref()
+            .unwrap()
+            .header_map()
+            .inner
+            .get(SAMReadGroupRecord::RG)
+            .ok_or_else(|| Error::BamUndefinedTag {
+                tag: SAMReadGroupRecord::RG.to_string(),
+            })?
+            .iter()
+            .filter_map(|e| {
+                e.get(SAMReadGroupRecord::READ_GROUP_ID_TAG).and_then(|v| {
+                    if v == rg {
+                        Some(e)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // check exactly one rg info exists.
+        match rg_info_map.len() {
+            1 => (),
+            _ => Err(Error::BamUndefinedTag {
+                tag: SAMReadGroupRecord::RG.to_string(),
+            })?,
+        }
+
+        let rg_info = rg_info_map.first().unwrap().clone();
+
+        Ok(SAMReadGroupRecord {
+            m_read_group_id: rg,
+            inner_map: rg_info,
+        })
+    }
+}
+
 #[cfg(test)]
 mod basemod_tests {
-    use crate::bam::{Read, Reader};
+    use super::Record;
+    use crate::bam::{record::ReadGroupRecord, IndexedReader, Read, Reader};
+
+    #[test]
+    fn get_read_group() {
+        let mut reader = IndexedReader::from_path("test_data/rg.bam").unwrap();
+
+        println!("{:#?}", reader.header().header_map().get("RG").unwrap());
+
+        let mut record = Record::new();
+
+        reader.fetch(".").unwrap();
+
+        let mut i = 0;
+        while let Some(Ok(_)) = {
+            i += 1;
+            reader.read(&mut record)
+        } {
+            let rg = record.get_read_group().unwrap();
+            println!("{:#?}", rg.get_flow_order().unwrap());
+            println!("{:#?}", rg.get_read_group_id());
+            println!("{:#?}", rg.get_library().unwrap());
+            println!("{:#?}", rg.get_platform().unwrap());
+            println!("{:#?}", rg.get_sample().unwrap());
+            println!("{:#?}", rg.get_platform_unit().unwrap());
+            println!();
+
+            if i >= 10 {
+                break;
+            }
+        }
+    }
 
     #[test]
     pub fn test_count_recorded() {

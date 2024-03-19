@@ -73,6 +73,8 @@ pub enum Error {
     BamPileup,
     #[error("file is not sorted by position")]
     BamUnsorted,
+    #[error("tag {tag} undefined in BAM header")]
+    BamUndefinedTag { tag: String },
 
     // Errors for BAM auxiliary fields
     #[error("failed to add aux field (out of memory?)")]
