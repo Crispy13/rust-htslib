@@ -14,10 +14,12 @@ use std::os::raw::c_char;
 use std::rc::Rc;
 use std::slice;
 use std::str;
+use std::sync::OnceLock;
 use std::u32;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use linear_map::LinearMap;
+use regex::Regex;
 
 use crate::bam::Error;
 use crate::bam::HeaderView;
@@ -512,6 +514,50 @@ impl Record {
             )
         }
     }
+
+    pub fn mate_cigar(&self) -> Result<CigarStringView, Error> {
+        #[allow(non_upper_case_globals)]
+        static rep_ol: OnceLock<Regex> = OnceLock::new();
+        let rep = rep_ol.get_or_init(|| Regex::new(r"(\d+)([A-Z])").unwrap());
+
+        let vec_cigar = match self.aux(b"MC") {
+            Ok(aux) => match aux {
+                Aux::String(s) => {
+                    rep.captures_iter(s)
+                        .map(|cap| {
+                            let len =
+                                cap.get(1).unwrap().as_str().parse::<u32>().or_else(|_| {
+                                    Err(Error::BamParseCigar { msg: s.to_string() })
+                                })?;
+                            let op = cap.get(2).unwrap().as_str();
+
+                            let cigar = match op {
+                                "M" => Cigar::Match(len),
+                                "I" => Cigar::Ins(len),
+                                "D" => Cigar::Del(len),
+                                "N" => Cigar::RefSkip(len),
+                                "S" => Cigar::SoftClip(len),
+                                "H" => Cigar::HardClip(len),
+                                "P" => Cigar::Pad(len),
+                                "=" => Cigar::Equal(len),
+                                "X" => Cigar::Diff(len),
+                                _ => Err(Error::BamParseCigar { msg: s.to_string() })?,
+                            };
+
+                            Ok(cigar)
+                        })
+                        .collect::<Result<Vec<Cigar>, Error>>()?
+                }
+                _ => Err(Error::BamAuxParsingError)?,
+            },
+            Err(err) => Err(err)?,
+        };
+
+        Ok(CigarString(vec_cigar).into_view(self.mpos()))
+    }
+
+    // #[inline]
+    // fn unpack_cigar_str(cigar_str: &str, pos: i64) -> CigarStringView {}
 
     /// Return unpacked cigar string. This will create a fresh copy the Cigar data.
     pub fn cigar(&self) -> CigarStringView {
@@ -2177,6 +2223,24 @@ impl CigarStringView {
     pub fn take(self) -> CigarString {
         self.inner
     }
+
+    /// The number of reference bases that the read covers, excluding padding.
+    /// based on Java htsjdk.samtools.Cigar.getReferenceLength().
+    pub fn get_reference_length(&self) -> usize {
+        let mut length = 0_u32;
+        self.iter().for_each(|cigar| match cigar {
+            Cigar::Match(len)
+            | Cigar::Del(len)
+            | Cigar::RefSkip(len)
+            | Cigar::Equal(len)
+            | Cigar::Diff(len) => {
+                length += len;
+            }
+            _ => (),
+        });
+
+        length as usize
+    }
 }
 
 impl ops::Deref for CigarStringView {
@@ -2534,46 +2598,46 @@ impl<'m> SAMReadGroupRecord<'m> {
         read_group_map: &'m LinearMap<String, String>,
     ) -> SAMReadGroupRecord<'m> {
         Self {
-            m_read_group_id:read_group_map.get(Self::READ_GROUP_ID_TAG).unwrap(),
+            m_read_group_id: read_group_map.get(Self::READ_GROUP_ID_TAG).unwrap(),
             inner_map: read_group_map,
         }
     }
 
-    pub fn get_read_group_id(&self) -> &str {
+    pub fn get_read_group_id(&self) -> &'m str {
         self.m_read_group_id
     }
 
-    pub fn get_sample(&self) -> Option<&str> {
+    pub fn get_sample(&self) -> Option<&'m str> {
         self.inner_map
             .get(Self::READ_GROUP_SAMPLE_TAG)
             .map(|e| e.as_str())
     }
 
-    pub fn get_library(&self) -> Option<&str> {
+    pub fn get_library(&self) -> Option<&'m str> {
         self.inner_map.get(Self::LIBRARY_TAG).map(|e| e.as_str())
     }
 
-    pub fn get_platform_unit(&self) -> Option<&str> {
+    pub fn get_platform_unit(&self) -> Option<&'m str> {
         self.inner_map
             .get(Self::PLATFORM_UNIT_TAG)
             .map(|e| e.as_str())
     }
 
-    pub fn get_platform(&self) -> Option<&str> {
+    pub fn get_platform(&self) -> Option<&'m str> {
         self.inner_map.get(Self::PLATFORM_TAG).map(|e| e.as_str())
     }
 
-    pub fn get_flow_order(&self) -> Option<&str> {
+    pub fn get_flow_order(&self) -> Option<&'m str> {
         self.inner_map.get(Self::FLOW_ORDER_TAG).map(|e| e.as_str())
     }
 
-    pub fn get_key_sequence(&self) -> Option<&str> {
+    pub fn get_key_sequence(&self) -> Option<&'m str> {
         self.inner_map
             .get(Self::KEY_SEQUENCE_TAG)
             .map(|e| e.as_str())
     }
 
-    pub fn id(&self) -> Option<&str> {
+    pub fn id(&self) -> Option<&'m str> {
         self.inner_map
             .get(Self::READ_GROUP_ID_TAG)
             .map(|e| e.as_str())
