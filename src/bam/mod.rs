@@ -1519,6 +1519,28 @@ impl HeaderView {
         }
     }
 
+    /// Get `SAMReadGroupRecord` per read group ID.
+    /// 
+    /// # Errors
+    /// Return Error when the header does not have "RG" tag.
+    /// 
+    pub fn get_read_groups(&self) -> Result<Vec<SAMReadGroupRecord>, Error> {
+        let rg_info_map = self
+            .header_map
+            .inner
+            .get(SAMReadGroupRecord::RG)
+            .ok_or_else(|| Error::BamUndefinedTag {
+                tag: SAMReadGroupRecord::RG.to_string(),
+            })?
+            .iter()
+            .map(
+                |lm| SAMReadGroupRecord::from_header_map(lm)
+            )
+            .collect::<Vec<_>>();
+
+        Ok(rg_info_map)
+    }
+
     pub fn header_map(&self) -> &HeaderMap {
         &self.header_map
     }
@@ -1526,7 +1548,7 @@ impl HeaderView {
     /// This returns a header as a HashMap.
     /// Comment lines starting with "@CO" will NOT be included in the HashMap.
     /// Comment lines can be obtained by the `comments` function.
-    pub fn make_hashmap(
+    fn make_hashmap(
         inner: *mut htslib::bam_hdr_t,
     ) -> HashMap<String, Vec<LinearMap<String, String>>> {
         let mut header_map = HashMap::default();

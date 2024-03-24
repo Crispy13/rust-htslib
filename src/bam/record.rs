@@ -2579,7 +2579,7 @@ enum PlatformValue {
 }
 impl<'m> SAMReadGroupRecord<'m> {
     pub(crate) const RG: &'static str = "RG";
-    const READ_GROUP_ID_TAG: &'static str = "ID";
+    pub(super) const READ_GROUP_ID_TAG: &'static str = "ID";
     const SEQUENCING_CENTER_TAG: &'static str = "CN";
     const DESCRIPTION_TAG: &'static str = "DS";
     const DATE_RUN_PRODUCED_TAG: &'static str = "DT";
@@ -3090,11 +3090,22 @@ mod alignment_cigar_tests {
     }
 }
 
-pub trait ReadGroupRecord {
+pub trait RecordExt {
     fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error>;
+
+    fn get_str_aux(&self, tag: &[u8]) -> Result<&str, Error>;
 }
 
-impl ReadGroupRecord for Record {
+impl RecordExt for Record {
+    /// .
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if:
+    /// 1. "RG" tag's type of record is other than string type.
+    /// 2. inner `Record::read_aux_field()` failed.
+    /// 3. No "RG" in header.
+    /// 4. multiple read group data for a single read group id in the header.
     fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error> {
         let rg = match self.aux(SAMReadGroupRecord::RG.as_bytes()) {
             Ok(aux) => match aux {
@@ -3139,6 +3150,15 @@ impl ReadGroupRecord for Record {
         Ok(SAMReadGroupRecord {
             m_read_group_id: rg,
             inner_map: rg_info,
+        })
+    }
+
+    fn get_str_aux(&self, tag: &[u8]) -> Result<&str, Error> {
+        self.aux(tag).and_then(|aux| {
+            match aux {
+                Aux::String(s) => Ok(s),
+                _ => Err(Error::BamAuxParsingError)?
+            }
         })
     }
 }
