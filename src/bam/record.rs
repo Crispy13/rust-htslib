@@ -3094,9 +3094,47 @@ pub trait RecordExt {
     fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error>;
 
     fn get_str_aux(&self, tag: &[u8]) -> Result<&str, Error>;
+
+    fn get_unclipped_start(&self) -> u32;
+
+    fn get_unclipped_end(&self) -> u32;
 }
 
 impl RecordExt for Record {
+    fn get_unclipped_start(&self) -> u32 {
+        let cigar = self.cigar();
+
+        let mut unclipped_start = cigar.pos() as u32;
+
+        for cigar_element in cigar.iter() {
+            match cigar_element {
+                Cigar::SoftClip(len) | Cigar::HardClip(len) => {
+                    unclipped_start -= *len;
+                }
+                _ => break,
+            }
+        }
+
+        unclipped_start
+    }
+
+    fn get_unclipped_end(&self) -> u32 {
+        let cigar = self.cigar();
+
+        let mut unclipped_end = cigar.end_pos() as u32;
+
+        for cigar_element in cigar.iter().rev() {
+            match cigar_element {
+                Cigar::SoftClip(len) | Cigar::HardClip(len) => {
+                    unclipped_end += *len;
+                }
+                _ => break,
+            }
+        }
+
+        unclipped_end
+    }
+
     /// .
     ///
     /// # Errors
@@ -3154,11 +3192,9 @@ impl RecordExt for Record {
     }
 
     fn get_str_aux(&self, tag: &[u8]) -> Result<&str, Error> {
-        self.aux(tag).and_then(|aux| {
-            match aux {
-                Aux::String(s) => Ok(s),
-                _ => Err(Error::BamAuxParsingError)?
-            }
+        self.aux(tag).and_then(|aux| match aux {
+            Aux::String(s) => Ok(s),
+            _ => Err(Error::BamAuxParsingError)?,
         })
     }
 }
