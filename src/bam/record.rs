@@ -548,7 +548,7 @@ impl Record {
                         })
                         .collect::<Result<Vec<Cigar>, Error>>()?
                 }
-                _ => Err(Error::BamAuxParsingError)?,
+                _ => Err(Error::BamAuxTagNotFound)?,
             },
             Err(err) => Err(err)?,
         };
@@ -3098,41 +3098,67 @@ pub trait RecordExt {
     fn get_unclipped_start(&self) -> u32;
 
     fn get_unclipped_end(&self) -> u32;
+
+    fn get_mate_unclipped_start(&self) -> Result<u32, Error>;
+
+    fn get_mate_unclipped_end(&self) -> Result<u32, Error>;
 }
 
+fn get_unclipped_start(alignment_start: i64, cigar: CigarStringView) -> u32 {
+    let mut unclipped_start = alignment_start as u32;
+
+    for cigar_element in cigar.iter() {
+        match cigar_element {
+            Cigar::SoftClip(len) | Cigar::HardClip(len) => {
+                unclipped_start -= *len;
+            }
+            _ => break,
+        }
+    }
+
+    unclipped_start
+}
+
+fn get_unclipped_end(alignment_end: i64, cigar: CigarStringView) -> u32 {
+    let mut unclipped_end = alignment_end as u32;
+
+    for cigar_element in cigar.iter().rev() {
+        match cigar_element {
+            Cigar::SoftClip(len) | Cigar::HardClip(len) => {
+                unclipped_end += *len;
+            }
+            _ => break,
+        }
+    }
+
+    unclipped_end
+}
+
+
+
+
 impl RecordExt for Record {
+    fn get_mate_unclipped_start(&self) -> Result<u32, Error> {
+        let mate_cigar = self.mate_cigar()?;
+    
+        Ok(get_unclipped_start(mate_cigar.pos, mate_cigar))
+    }
+    
+    fn get_mate_unclipped_end(&self) -> Result<u32, Error> {
+        let mate_cigar = self.mate_cigar()?;
+    
+        Ok(get_unclipped_end(mate_cigar.end_pos(), mate_cigar))
+    }
+
     fn get_unclipped_start(&self) -> u32 {
         let cigar = self.cigar();
-
-        let mut unclipped_start = cigar.pos() as u32;
-
-        for cigar_element in cigar.iter() {
-            match cigar_element {
-                Cigar::SoftClip(len) | Cigar::HardClip(len) => {
-                    unclipped_start -= *len;
-                }
-                _ => break,
-            }
-        }
-
-        unclipped_start
+        get_unclipped_start(cigar.pos, cigar)
     }
 
     fn get_unclipped_end(&self) -> u32 {
         let cigar = self.cigar();
 
-        let mut unclipped_end = cigar.end_pos() as u32;
-
-        for cigar_element in cigar.iter().rev() {
-            match cigar_element {
-                Cigar::SoftClip(len) | Cigar::HardClip(len) => {
-                    unclipped_end += *len;
-                }
-                _ => break,
-            }
-        }
-
-        unclipped_end
+        get_unclipped_end(cigar.end_pos(), cigar)
     }
 
     /// .
