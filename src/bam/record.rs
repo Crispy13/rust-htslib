@@ -2527,7 +2527,7 @@ impl<'a> Iterator for BaseModificationsIter<'a> {
  *
  * This struct is based on SAMReadGroupRecord of htsjdk(Java).
  */
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SAMReadGroupRecord<'m> {
     m_read_group_id: &'m str,
     inner_map: &'m LinearMap<String, String>,
