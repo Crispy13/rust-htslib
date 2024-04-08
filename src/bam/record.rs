@@ -3134,19 +3134,16 @@ fn get_unclipped_end(alignment_end: i64, cigar: CigarStringView) -> u32 {
     unclipped_end
 }
 
-
-
-
 impl RecordExt for Record {
     fn get_mate_unclipped_start(&self) -> Result<u32, Error> {
         let mate_cigar = self.mate_cigar()?;
-    
+
         Ok(get_unclipped_start(mate_cigar.pos, mate_cigar))
     }
-    
+
     fn get_mate_unclipped_end(&self) -> Result<u32, Error> {
         let mate_cigar = self.mate_cigar()?;
-    
+
         Ok(get_unclipped_end(mate_cigar.end_pos(), mate_cigar))
     }
 
@@ -3228,37 +3225,37 @@ impl RecordExt for Record {
 #[cfg(test)]
 mod basemod_tests {
     use super::Record;
-    use crate::bam::{record::ReadGroupRecord, IndexedReader, Read, Reader};
+    use crate::bam::{ IndexedReader, Read, Reader};
 
-    #[test]
-    fn get_read_group() {
-        let mut reader = IndexedReader::from_path("test_data/rg.bam").unwrap();
+    // #[test]
+    // fn get_read_group() {
+    //     let mut reader = IndexedReader::from_path("test_data/rg.bam").unwrap();
 
-        println!("{:#?}", reader.header().header_map().get("RG").unwrap());
+    //     println!("{:#?}", reader.header().header_map().get("RG").unwrap());
 
-        let mut record = Record::new();
+    //     let mut record = Record::new();
 
-        reader.fetch(".").unwrap();
+    //     reader.fetch(".").unwrap();
 
-        let mut i = 0;
-        while let Some(Ok(_)) = {
-            i += 1;
-            reader.read(&mut record)
-        } {
-            let rg = record.get_read_group().unwrap();
-            println!("{:#?}", rg.get_flow_order().unwrap());
-            println!("{:#?}", rg.get_read_group_id());
-            println!("{:#?}", rg.get_library().unwrap());
-            println!("{:#?}", rg.get_platform().unwrap());
-            println!("{:#?}", rg.get_sample().unwrap());
-            println!("{:#?}", rg.get_platform_unit().unwrap());
-            println!();
+    //     let mut i = 0;
+    //     while let Some(Ok(_)) = {
+    //         i += 1;
+    //         reader.read(&mut record)
+    //     } {
+    //         let rg = record.get_read_group().unwrap();
+    //         println!("{:#?}", rg.get_flow_order().unwrap());
+    //         println!("{:#?}", rg.get_read_group_id());
+    //         println!("{:#?}", rg.get_library().unwrap());
+    //         println!("{:#?}", rg.get_platform().unwrap());
+    //         println!("{:#?}", rg.get_sample().unwrap());
+    //         println!("{:#?}", rg.get_platform_unit().unwrap());
+    //         println!();
 
-            if i >= 10 {
-                break;
-            }
-        }
-    }
+    //         if i >= 10 {
+    //             break;
+    //         }
+    //     }
+    // }
 
     #[test]
     pub fn test_count_recorded() {

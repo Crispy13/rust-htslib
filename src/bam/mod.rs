@@ -1520,10 +1520,10 @@ impl HeaderView {
     }
 
     /// Get `SAMReadGroupRecord` per read group ID.
-    /// 
+    ///
     /// # Errors
     /// Return Error when the header does not have "RG" tag.
-    /// 
+    ///
     pub fn get_read_groups(&self) -> Result<Vec<SAMReadGroupRecord>, Error> {
         let rg_info_map = self
             .header_map
@@ -1533,9 +1533,7 @@ impl HeaderView {
                 tag: SAMReadGroupRecord::RG.to_string(),
             })?
             .iter()
-            .map(
-                |lm| SAMReadGroupRecord::from_header_map(lm)
-            )
+            .map(|lm| SAMReadGroupRecord::from_header_map(lm))
             .collect::<Vec<_>>();
 
         Ok(rg_info_map)
