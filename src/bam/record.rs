@@ -3225,7 +3225,7 @@ impl RecordExt for Record {
 #[cfg(test)]
 mod basemod_tests {
     use super::Record;
-    use crate::bam::{ IndexedReader, Read, Reader};
+    use crate::bam::{IndexedReader, Read, Reader};
 
     // #[test]
     // fn get_read_group() {
