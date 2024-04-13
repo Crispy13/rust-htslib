@@ -3102,6 +3102,13 @@ pub trait RecordExt {
     fn get_mate_unclipped_start(&self) -> Result<u32, Error>;
 
     fn get_mate_unclipped_end(&self) -> Result<u32, Error>;
+
+    /**
+     * the read is either a PCR duplicate or an optical duplicate.
+     */
+    fn set_duplicate_read_flag(&mut self, flag:bool);
+
+    fn is_secondary_or_supplementary(&self) -> bool;
 }
 
 fn get_unclipped_start(alignment_start: i64, cigar: CigarStringView) -> u32 {
@@ -3135,12 +3142,18 @@ fn get_unclipped_end(alignment_end: i64, cigar: CigarStringView) -> u32 {
 }
 
 impl RecordExt for Record {
+    /// # Errors
+    /// Failed when:
+    /// - `self.mate_cigar()` fails.
     fn get_mate_unclipped_start(&self) -> Result<u32, Error> {
         let mate_cigar = self.mate_cigar()?;
 
         Ok(get_unclipped_start(mate_cigar.pos, mate_cigar))
     }
 
+    /// # Errors
+    /// Failed when:
+    /// - `self.mate_cigar()` fails.
     fn get_mate_unclipped_end(&self) -> Result<u32, Error> {
         let mate_cigar = self.mate_cigar()?;
 
@@ -3219,6 +3232,20 @@ impl RecordExt for Record {
             Aux::String(s) => Ok(s),
             _ => Err(Error::BamAuxParsingError)?,
         })
+    }
+    
+    fn set_duplicate_read_flag(&mut self, flag:bool) {
+        const DUP_FLAG:u16=0x400;
+        
+        if flag {
+            self.set_flags(self.flags() | DUP_FLAG)
+        } else {
+            self.set_flags(self.flags() & !DUP_FLAG)
+        }
+    }
+
+    fn is_secondary_or_supplementary(&self) -> bool {
+        self.is_secondary() || self.is_supplementary()
     }
 }
 
