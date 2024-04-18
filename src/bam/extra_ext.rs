@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
-use linear_map::LinearMap;
 use crate::errors::Error;
+use linear_map::LinearMap;
 
-use super::{record::{Aux, Cigar, CigarStringView}, HeaderView, Record};
+use super::{
+    record::{Aux, Cigar, CigarStringView},
+    HeaderView, Record,
+};
 
 /**
  * Header information about a read group.
@@ -128,6 +131,7 @@ impl<'m> SAMReadGroupRecord<'m> {
 }
 
 pub trait RecordExt {
+    fn is_fr_pair(&self) -> bool;
     fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error>;
 
     fn get_str_aux(&self, tag: &[u8]) -> Result<&str, Error>;
@@ -143,7 +147,7 @@ pub trait RecordExt {
     /**
      * the read is either a PCR duplicate or an optical duplicate.
      */
-    fn set_duplicate_read_flag(&mut self, flag:bool);
+    fn set_duplicate_read_flag(&mut self, flag: bool);
 
     fn is_secondary_or_supplementary(&self) -> bool;
 }
@@ -270,10 +274,10 @@ impl RecordExt for Record {
             _ => Err(Error::BamAuxParsingError)?,
         })
     }
-    
-    fn set_duplicate_read_flag(&mut self, flag:bool) {
-        const DUP_FLAG:u16=0x400;
-        
+
+    fn set_duplicate_read_flag(&mut self, flag: bool) {
+        const DUP_FLAG: u16 = 0x400;
+
         if flag {
             self.set_flags(self.flags() | DUP_FLAG)
         } else {
@@ -283,6 +287,14 @@ impl RecordExt for Record {
 
     fn is_secondary_or_supplementary(&self) -> bool {
         self.is_secondary() || self.is_supplementary()
+    }
+
+    fn is_fr_pair(&self) -> bool {
+        match self.read_pair_orientation() {
+            bio_types::sequence::SequenceReadPairOrientation::F1R2
+            | bio_types::sequence::SequenceReadPairOrientation::F2R1 => true,
+            _ => false,
+        }
     }
 }
 
@@ -338,4 +350,3 @@ impl HeaderViewExt for HeaderView {
         Ok(rg_info_map)
     }
 }
-    
