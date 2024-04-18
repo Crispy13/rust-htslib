@@ -11,6 +11,7 @@ pub mod header;
 pub mod index;
 pub mod pileup;
 pub mod record;
+pub mod extra_ext;
 
 #[cfg(feature = "serde_feature")]
 pub mod record_serde;
@@ -40,7 +41,7 @@ use hts_sys::{hts_fmt_option, sam_fields};
 use std::convert::{TryFrom, TryInto};
 use std::mem::MaybeUninit;
 
-use self::record::SAMReadGroupRecord;
+use self::extra_ext::HeaderMap;
 
 /// # Safety
 ///
@@ -1368,33 +1369,7 @@ fn itr_next(
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct HeaderMap {
-    inner: HashMap<String, Vec<LinearMap<String, String>>>,
-}
 
-impl HeaderMap {
-    const HD: &'static str = "HD";
-    const SO: &'static str = "SO";
-
-    pub fn get_read_groups(&self) -> Option<Vec<SAMReadGroupRecord>> {
-        self.inner.get(SAMReadGroupRecord::RG).and_then(|v| {
-            Some(
-                v.into_iter()
-                    .map(|e| SAMReadGroupRecord::from_header_map(e))
-                    .collect::<Vec<_>>(),
-            )
-        })
-    }
-
-    pub fn get_sort_order(&self) -> Option<&str> {
-        self.inner
-            .get(Self::HD)
-            .and_then(|e| e.first())
-            .and_then(|e| e.get(Self::SO))
-            .and_then(|e| Some(e.as_str()))
-    }
-}
 
 #[derive(Debug)]
 pub struct HeaderView {
@@ -1517,26 +1492,6 @@ impl HeaderView {
             }
             ffi::CStr::from_ptr(rebuilt_hdr).to_bytes()
         }
-    }
-
-    /// Get `SAMReadGroupRecord` per read group ID.
-    ///
-    /// # Errors
-    /// Return Error when the header does not have "RG" tag.
-    ///
-    pub fn get_read_groups(&self) -> Result<Vec<SAMReadGroupRecord>, Error> {
-        let rg_info_map = self
-            .header_map
-            .inner
-            .get(SAMReadGroupRecord::RG)
-            .ok_or_else(|| Error::BamUndefinedTag {
-                tag: SAMReadGroupRecord::RG.to_string(),
-            })?
-            .iter()
-            .map(|lm| SAMReadGroupRecord::from_header_map(lm))
-            .collect::<Vec<_>>();
-
-        Ok(rg_info_map)
     }
 
     pub fn header_map(&self) -> &HeaderMap {
