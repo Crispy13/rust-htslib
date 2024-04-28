@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::TryFrom};
 
-use crate::errors::Error;
+use crate::{bam::record::AuxArray, errors::Error};
 use linear_map::LinearMap;
 
 use super::{
-    record::{Aux, Cigar, CigarStringView},
+    record::{Aux, Cigar, CigarString, CigarStringView},
     HeaderView, Record,
 };
 
@@ -130,7 +130,28 @@ impl<'m> SAMReadGroupRecord<'m> {
     }
 }
 
+const TAGS_TO_REVERSE_COMPLEMENT: [&'static str; 2] = ["E2", "SQ"];
+const TAGS_TO_REVERSE: [&'static str; 2] = ["OQ", "U2"];
+
+/**
+ * If a read has this reference index, it is unaligned, but not all unaligned reads have
+ * this reference index (see above).
+ */
+const NO_ALIGNMENT_REFERENCE_INDEX: i32 = -1;
+
+const NO_ALIGNMENT_START: i64 = 0;
+
+const NO_ALIGNMENT_CIGAR: &str = "*";
+
+const NO_MAPPING_QUALITY: i32 = 0;
+
 pub trait RecordExt {
+    fn reverse_complement(
+        &mut self,
+        tags_to_rev_comp: &[&str],
+        tags_to_reverse: &[&str],
+        inplace: bool,
+    );
     fn is_fr_pair(&self) -> bool;
     fn get_read_group(&self) -> Result<SAMReadGroupRecord, Error>;
 
@@ -296,6 +317,169 @@ impl RecordExt for Record {
             _ => false,
         }
     }
+
+    fn reverse_complement(
+        &mut self,
+        tags_to_rev_comp: &[&str],
+        tags_to_reverse: &[&str],
+        inplace: bool,
+    ) {
+        let mut read_bases = self.seq().encoded.to_vec();
+        reverse_complement(&mut read_bases);
+
+        let mut qualities = self.qual().to_vec();
+        qualities.reverse();
+
+        self.set(
+            &self.qname().to_vec(),
+            Some(&self.cigar()),
+            &read_bases,
+            &qualities,
+        );
+
+        // Deal with tags that need to be reverse complemented
+        for &tag in tags_to_rev_comp {
+            if let Ok(mut value) = self.aux(tag.as_bytes()) {
+                if let Aux::ArrayU8(arr) = &value {
+                    let mut arr = arr.iter().collect::<Vec<_>>();
+                    reverse_complement(&mut arr);
+
+                    value = Aux::ArrayU8(AuxArray::from_bytes(&arr));
+
+                    remove_and_push!(self, tag, value);
+                } else if let Aux::String(s) = &value {
+                    //SequenceUtil.reverseComplement is in-place for bytes but copies Strings since they are immutable.
+                    let mut s = (*s).to_owned().into_bytes();
+                    reverse_complement(&mut s);
+
+                    value = Aux::String(std::str::from_utf8(&s).unwrap());
+                    remove_and_push!(self, tag, value);
+                } else {
+                    panic!("Don't know how to reverse complement: {:?}", value);
+                }
+            }
+        }
+
+        // Deal with tags that needed to just be reversed
+        for &tag in tags_to_reverse {
+            if let Ok(mut value) = self.aux(tag.as_bytes()) {
+                match value {
+                    Aux::String(s) => {
+                        let vs = String::from_utf8(s.bytes().rev().collect::<Vec<_>>()).unwrap();
+                        value = Aux::String(&vs);
+
+                        remove_and_push!(self, tag, value);
+                    }
+                    Aux::ArrayU8(arr) => {
+                        reverse_aux_array_and_set!(Aux::ArrayU8, arr, value, self, tag)
+                    }
+                    Aux::ArrayI16(arr) => {
+                        reverse_aux_array_and_set!(Aux::ArrayI16, arr, value, self, tag)
+                    }
+                    Aux::ArrayI32(arr) => {
+                        reverse_aux_array_and_set!(Aux::ArrayI32, arr, value, self, tag)
+                    }
+                    Aux::ArrayFloat(arr) => {
+                        reverse_aux_array_and_set!(Aux::ArrayFloat, arr, value, self, tag)
+                    }
+                    _ => panic!("Don't know how to reverse: {:?}", value),
+                }
+            }
+        }
+    }
+}
+
+/// remove tag and its original value and push a new value to the tag.
+macro_rules! remove_and_push {
+    ($rec:ident, $tag:ident, $value:ident) => {
+        $rec.remove_aux($tag.as_bytes()).unwrap();
+        $rec.push_aux($tag.as_bytes(), $value).unwrap();
+    };
+}
+
+pub(crate) use remove_and_push;
+
+macro_rules! reverse_aux_array_and_set {
+    ($array_variant:path, $arr:ident, $value:ident, $self:ident, $tag:ident) => {{
+        let mut arr = $arr.iter().collect::<Vec<_>>();
+        arr.reverse();
+
+        $value = $array_variant(AuxArray::from(&arr));
+
+        remove_and_push!($self, $tag, $value);
+    }};
+}
+
+pub(crate) use reverse_aux_array_and_set;
+
+/// convert a sequence into its reverse complement. (in-place)
+pub(crate) fn reverse_complement(seq: &mut [u8]) {
+    // let mut s = seq.to_string().into_bytes(); //seq.chars().collect::<Vec<char>>();
+    let mut s_iter = seq.iter_mut();
+
+    loop {
+        match (s_iter.next(), s_iter.next_back()) {
+            (Some(f), Some(b)) => {
+                (*f, *b) = (get_complement_base(b), get_complement_base(f));
+            }
+            (Some(f), None) => {
+                *f = get_complement_base(f);
+                break;
+            }
+            (None, None) => {
+                break;
+            }
+            (None, Some(b)) => {
+                // this is unreachable.
+                unreachable!();
+                break;
+            }
+        }
+    }
+
+    // String::from_utf8(seq).unwrap()
+}
+
+#[inline]
+fn get_complement_base(base: &u8) -> u8 {
+    match base {
+        b'A' | b'a' => b'T',
+        b'T' | b't' => b'A',
+        b'C' | b'c' => b'G',
+        b'G' | b'g' => b'C',
+        _ => b'N',
+    }
+}
+
+/**
+ * Strip mapping information from a SAMRecord.
+ * <p>
+ * WARNING: by clearing the secondary and supplementary flags,
+ * this may have the affect of producing multiple distinct records with the
+ * same read name and flags, which may lead to invalid SAM/BAM output.
+ * Callers of this method should make sure to deal with this issue.
+ */
+pub fn make_read_unmapped(rec: &mut Record) {
+    if rec.is_reverse() {
+        rec.reverse_complement(&TAGS_TO_REVERSE_COMPLEMENT, &TAGS_TO_REVERSE, true);
+        rec.unset_reverse();
+    }
+
+    rec.unset_duplicate();
+    rec.set_tid(NO_ALIGNMENT_REFERENCE_INDEX);
+    rec.set_pos(NO_ALIGNMENT_START);
+    rec.set(
+        &rec.qname().to_vec(),
+        Some(&CigarString::try_from(NO_ALIGNMENT_CIGAR.as_bytes()).unwrap()),
+        &rec.seq().encoded.to_vec(),
+        &rec.qual().to_vec(),
+    );
+
+    rec.set_insert_size(0);
+    rec.unset_secondary();
+    rec.unset_supplementary();
+    rec.unset_proper_pair();
+    rec.set_unmapped();
 }
 
 #[derive(Debug, Clone)]
@@ -348,5 +532,58 @@ impl HeaderViewExt for HeaderView {
             .collect::<Vec<_>>();
 
         Ok(rg_info_map)
+    }
+}
+
+pub trait CigarExt {
+    fn modify_len(&mut self, len: u32);
+    fn consumes_reference_bases(&self) -> bool;
+    fn consumes_read_bases(&self) -> bool;
+    /** Returns true if the operator is a M, a X or a EQ */
+    fn is_alignment(&self) -> bool;
+}
+
+impl CigarExt for Cigar {
+    fn is_alignment(&self) -> bool {
+        match self {
+            Cigar::Match(_) | Cigar::Equal(_) | Cigar::Diff(_) => true,
+            _ => false,
+        }
+    }
+
+    fn consumes_read_bases(&self) -> bool {
+        match self {
+            Cigar::Match(_)
+            | Cigar::Ins(_)
+            | Cigar::SoftClip(_)
+            | Cigar::Equal(_)
+            | Cigar::Diff(_) => true,
+            _ => false,
+        }
+    }
+
+    fn consumes_reference_bases(&self) -> bool {
+        match self {
+            Cigar::Match(_)
+            | Cigar::Del(_)
+            | Cigar::RefSkip(_)
+            | Cigar::Equal(_)
+            | Cigar::Diff(_) => true,
+            _ => false,
+        }
+    }
+
+    fn modify_len(&mut self, len:u32) {
+        match self {
+            Cigar::Match(ref mut l) => *l = len,
+            Cigar::Ins(ref mut l) => *l = len,
+            Cigar::Del(ref mut l) => *l = len,
+            Cigar::RefSkip(ref mut l) => *l = len,
+            Cigar::SoftClip(ref mut l) => *l = len,
+            Cigar::HardClip(ref mut l) => *l = len,
+            Cigar::Pad(ref mut l) => *l = len,
+            Cigar::Equal(ref mut l) => *l = len,
+            Cigar::Diff(ref mut l) => *l = len,
+        }
     }
 }

@@ -1235,7 +1235,7 @@ impl genome::AbstractInterval for Record {
     fn contig(&self) -> &str {
         let tid = self.tid();
         if tid < 0 {
-            panic!("invalid tid, must be at least zero");
+            panic!("invalid tid, must be at least zero, read name={}", std::str::from_utf8(self.qname()).unwrap());
         }
         str::from_utf8(
             self.header
@@ -1494,7 +1494,7 @@ where
     }
 
     /// Create AuxArrays from raw byte slices borrowed from `bam::Record`.
-    fn from_bytes(bytes: &'a [u8]) -> Self {
+    pub(super) fn from_bytes(bytes: &'a [u8]) -> Self {
         Self::RawLeBytes(AuxArrayRawLeBytes {
             slice: bytes,
             phantom_data: PhantomData,
