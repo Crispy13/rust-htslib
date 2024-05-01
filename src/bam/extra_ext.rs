@@ -1,6 +1,6 @@
 use std::{collections::HashMap, convert::TryFrom};
 
-use crate::{bam::record::AuxArray, errors::Error};
+use crate::{bam::{ext::BamRecordExtensions, record::AuxArray}, errors::Error};
 use linear_map::LinearMap;
 
 use super::{
@@ -146,6 +146,7 @@ const NO_ALIGNMENT_CIGAR: &str = "*";
 const NO_MAPPING_QUALITY: i32 = 0;
 
 pub trait RecordExt {
+    fn mates_overlap(&self) -> Option<bool>;
     fn setter(&mut self) -> RecordModifier;
     fn reverse_complement(
         &mut self,
@@ -392,6 +393,23 @@ impl RecordExt for Record {
     fn setter(&mut self) -> RecordModifier {
         RecordModifier::new(self)
     }
+
+    fn mates_overlap(&self) -> Option<bool> {
+        assert!(
+            !self.is_unmapped() && self.is_paired() && !self.is_mate_unmapped(),
+            "Cannot determine if mates overlap without paired mates that are both mapped."
+        );
+
+        if self.tid() != self.mtid() {
+            Some(false)
+        } else if self.mpos() > self.reference_end() {
+            Some(false)
+        } else if self.mpos() >= self.pos() && self.mpos() <= self.reference_end() {
+            Some(true)
+        } else {
+            self.mate
+        }
+    }
 }
 
 pub struct RecordModifier<'r> {
@@ -435,12 +453,7 @@ impl<'r> RecordModifier<'r> {
         let new_seq = self.seq.unwrap_or_else(|| rec.seq().encoded.to_vec());
         let new_quals = self.quals.unwrap_or_else(|| rec.qual().to_vec());
 
-        rec.set(
-            &new_qname,
-            new_cigar.as_ref(),
-            &new_seq,
-            &new_quals
-        );
+        rec.set(&new_qname, new_cigar.as_ref(), &new_seq, &new_quals);
     }
 }
 
