@@ -146,6 +146,7 @@ const NO_ALIGNMENT_CIGAR: &str = "*";
 const NO_MAPPING_QUALITY: i32 = 0;
 
 pub trait RecordExt {
+    fn setter(&mut self) -> RecordModifier;
     fn reverse_complement(
         &mut self,
         tags_to_rev_comp: &[&str],
@@ -387,6 +388,60 @@ impl RecordExt for Record {
             }
         }
     }
+
+    fn setter(&mut self) -> RecordModifier {
+        RecordModifier::new(self)
+    }
+}
+
+pub struct RecordModifier<'r> {
+    rec: &'r mut Record,
+    qname: Option<Vec<u8>>,
+    cigar: Option<CigarString>,
+    seq: Option<Vec<u8>>,
+    quals: Option<Vec<u8>>,
+}
+
+macro_rules! record_modifier_setter {
+    ($func_name:ident, $self:ident, $field:ident, $ty:ty) => {
+        pub fn $func_name(mut $self, value:$ty) -> Self {
+            $self.$field = Some(value);
+            $self
+        }
+    };
+}
+
+impl<'r> RecordModifier<'r> {
+    fn new(rec: &'r mut Record) -> Self {
+        Self {
+            rec,
+            qname: None,
+            cigar: None,
+            seq: None,
+            quals: None,
+        }
+    }
+
+    record_modifier_setter!(set_qname, self, qname, Vec<u8>);
+    record_modifier_setter!(set_cigar, self, cigar, CigarString);
+    record_modifier_setter!(set_seq, self, seq, Vec<u8>);
+    record_modifier_setter!(set_quals, self, quals, Vec<u8>);
+
+    pub fn modify_record(self) {
+        let rec = self.rec;
+
+        let new_qname = self.qname.unwrap_or_else(|| rec.qname().to_vec());
+        let new_cigar = self.cigar;
+        let new_seq = self.seq.unwrap_or_else(|| rec.seq().encoded.to_vec());
+        let new_quals = self.quals.unwrap_or_else(|| rec.qual().to_vec());
+
+        rec.set(
+            &new_qname,
+            new_cigar.as_ref(),
+            &new_seq,
+            &new_quals
+        );
+    }
 }
 
 /// remove tag and its original value and push a new value to the tag.
@@ -536,6 +591,7 @@ impl HeaderViewExt for HeaderView {
 }
 
 pub trait CigarExt {
+    fn is_clipping(&self) -> bool;
     fn modify_len(&mut self, len: u32);
     fn consumes_reference_bases(&self) -> bool;
     fn consumes_read_bases(&self) -> bool;
@@ -573,7 +629,7 @@ impl CigarExt for Cigar {
         }
     }
 
-    fn modify_len(&mut self, len:u32) {
+    fn modify_len(&mut self, len: u32) {
         match self {
             Cigar::Match(ref mut l) => *l = len,
             Cigar::Ins(ref mut l) => *l = len,
@@ -585,5 +641,38 @@ impl CigarExt for Cigar {
             Cigar::Equal(ref mut l) => *l = len,
             Cigar::Diff(ref mut l) => *l = len,
         }
+    }
+
+    fn is_clipping(&self) -> bool {
+        match self {
+            Cigar::SoftClip(_) | Cigar::HardClip(_) => true,
+            _ => false,
+        }
+    }
+}
+
+pub trait CigarStringExt {
+    /** Coalesces adjacent operators of the same type into single operators. */
+    fn coalesce(&self) -> CigarString;
+}
+
+impl CigarStringExt for CigarString {
+    fn coalesce(&self) -> CigarString {
+        let mut iter = self.iter();
+        let mut builder = Vec::with_capacity(self.len());
+
+        while let Some(elem) = iter.next() {
+            let same_len = iter
+                .by_ref()
+                .take_while(|c| std::mem::discriminant(elem) == std::mem::discriminant(c))
+                .fold(elem.len(), |a, x| a + x.len());
+
+            let mut same_elem = elem.clone();
+            same_elem.modify_len(same_len);
+
+            builder.push(same_elem);
+        }
+
+        CigarString::from(builder)
     }
 }
