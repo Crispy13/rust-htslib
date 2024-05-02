@@ -1,6 +1,9 @@
 use std::{collections::HashMap, convert::TryFrom};
 
-use crate::{bam::{ext::BamRecordExtensions, record::AuxArray}, errors::Error};
+use crate::{
+    bam::{ext::BamRecordExtensions, record::AuxArray},
+    errors::Error,
+};
 use linear_map::LinearMap;
 
 use super::{
@@ -146,7 +149,10 @@ const NO_ALIGNMENT_CIGAR: &str = "*";
 const NO_MAPPING_QUALITY: i32 = 0;
 
 pub trait RecordExt {
-    fn mates_overlap(&self) -> Option<bool>;
+    fn get_read_position_at_reference_position(&self, pos: i64, return_last_base_if_deleted: bool) -> i64;
+    fn mate_start(&self) -> Result<i64, Error>;
+    fn mate_end(&self) -> Result<i64, Error>;
+    fn mates_overlap(&self) -> Result<bool, Error>;
     fn setter(&mut self) -> RecordModifier;
     fn reverse_complement(
         &mut self,
@@ -394,21 +400,88 @@ impl RecordExt for Record {
         RecordModifier::new(self)
     }
 
-    fn mates_overlap(&self) -> Option<bool> {
+    fn mates_overlap(&self) -> Result<bool, Error> {
         assert!(
             !self.is_unmapped() && self.is_paired() && !self.is_mate_unmapped(),
             "Cannot determine if mates overlap without paired mates that are both mapped."
         );
 
         if self.tid() != self.mtid() {
-            Some(false)
+            Ok(false)
         } else if self.mpos() > self.reference_end() {
-            Some(false)
+            Ok(false)
         } else if self.mpos() >= self.pos() && self.mpos() <= self.reference_end() {
-            Some(true)
+            Ok(true)
         } else {
-            self.mate
+            self.mate_cigar().map(|mc| {
+                coord_math::overlaps(
+                    self.reference_start(),
+                    self.reference_end(),
+                    mc.pos(),
+                    mc.end_pos(),
+                )
+            })
         }
+    }
+
+    fn mate_end(&self) -> Result<i64, Error> {
+        assert!(
+            self.is_paired() && !self.is_mate_unmapped(),
+            "Cannot get mate end position on read without a mapped mate."
+        );
+        let mc = self.mate_cigar()?;
+
+        Ok(mc.end_pos())
+    }
+
+    fn mate_start(&self) -> Result<i64, Error> {
+        assert!(
+            self.is_paired() && !self.is_mate_unmapped(),
+            "Cannot get mate end position on read without a mapped mate."
+        );
+        let mc = self.mate_cigar()?;
+
+        Ok(mc.pos())
+    }
+
+    fn read_pos_at_ref_pos(pos: i64, return_last_base_if_deleted: bool) {
+        todo!()
+    }
+
+    fn get_read_position_at_reference_position(&self, pos: i64, return_last_base_if_deleted: bool) -> i64 {
+        if pos <= 0 {
+            return 0;
+        }
+
+        let mut last_alignment_offset = 0_i64;
+        for alignment_block in self
+            .cigar()
+            .get_alignment_blocks(self.reference_start(), "read cigar")
+            .iter()
+        {
+            if coord_math::get_end(
+                alignment_block.get_reference_start(),
+                alignment_block.get_length(),
+            ) >= pos
+            {
+                if pos < alignment_block.get_reference_start() {
+                    // There must have been a deletion block that skipped
+                    if return_last_base_if_deleted {
+                        return last_alignment_offset
+                    } else {
+                        return 0
+                    }
+                } else {
+                    return pos - alignment_block.get_reference_start() + alignment_block.get_read_start() as i64 
+                }
+            } else {
+                // record the offset to the last base in the current block, in case the next block starts too late
+                last_alignment_offset = alignment_block.get_read_start() as i64 + alignment_block.get_length() as i64 - 1;
+            }
+        }
+
+        // if we are here, the reference position was not overlapping the read at all
+        0
     }
 }
 
@@ -665,6 +738,11 @@ impl CigarExt for Cigar {
 }
 
 pub trait CigarStringExt {
+    fn get_alignment_blocks(
+        &self,
+        alignment_start: i64,
+        cigar_type_name: &str,
+    ) -> Vec<AlignmentBlock>;
     /** Coalesces adjacent operators of the same type into single operators. */
     fn coalesce(&self) -> CigarString;
 }
@@ -688,4 +766,117 @@ impl CigarStringExt for CigarString {
 
         CigarString::from(builder)
     }
+
+    /**
+     * Given a Cigar, Returns blocks of the sequence that have been aligned directly to the
+     * reference sequence. Note that clipped portions, and inserted and deleted bases (vs. the reference)
+     * are not represented in the alignment blocks.
+     *
+     * @param cigar          The cigar containing the alignment information
+     * @param alignmentStart The start (1-based) of the alignment
+     * @param cigarTypeName  The type of cigar passed - for error logging.
+     * @return List of alignment blocks
+     */
+    fn get_alignment_blocks(
+        &self,
+        alignment_start: i64,
+        cigar_type_name: &str,
+    ) -> Vec<AlignmentBlock> {
+        let mut alignment_blocks = Vec::with_capacity(self.len());
+
+        let mut read_base = 1;
+        let mut ref_base = alignment_start;
+
+        for cigar_element in self.iter() {
+            match cigar_element {
+                Cigar::HardClip(_) | Cigar::Pad(_) => {
+                    // ignore hard clips and pads
+                }
+                Cigar::SoftClip(l) | Cigar::RefSkip(l) | Cigar::Del(l) | Cigar::Ins(l) => {
+                    read_base += *l;
+                }
+                Cigar::Match(l) | Cigar::Equal(l) | Cigar::Diff(l) => {
+                    let l = *l;
+                    alignment_blocks.push(AlignmentBlock::new(read_base, ref_base, l));
+                    read_base += l;
+                    ref_base += l as i64;
+                }
+                other => {
+                    panic!("Won't deal with cigar: {:?}", other);
+                }
+            }
+        }
+
+        alignment_blocks.shrink_to_fit();
+
+        alignment_blocks
+    }
+}
+
+/**
+ * Represents the contiguous alignment of a subset of read bases to a reference
+ * sequence. Simply put an alignment block tells you that read bases from
+ * readStart are aligned to the reference (matching or mismatching) from
+ * referenceStart for length bases.
+ *
+ * @author Tim Fennell
+ */
+struct AlignmentBlock {
+    read_start: u32,
+    reference_start: i64,
+    length: u32,
+}
+
+impl AlignmentBlock {
+    /** Constructs a new alignment block with the supplied read and ref starts and length. */
+    fn new(read_start: u32, reference_start: i64, length: u32) -> AlignmentBlock {
+        Self {
+            read_start,
+            reference_start,
+            length,
+        }
+    }
+
+    /** The first, 1-based, base in the read that is aligned to the reference reference. */
+    fn get_read_start(&self) -> u32 {
+        self.read_start
+    }
+
+    /** The first, 1-based, position in the reference to which the read is aligned. */
+    fn get_reference_start(&self) -> i64 {
+        self.reference_start
+    }
+
+    /** The number of contiguous bases aligned to the reference. */
+    fn get_length(&self) -> u32 {
+        self.length
+    }
+}
+
+pub mod coord_math {
+    /**
+     * Checks to see if the two sets of coordinates have any overlap.
+     */
+    #[inline]
+    pub fn overlaps(start: i64, end: i64, start2: i64, end2: i64) -> bool {
+        (start2 >= start && start2 <= end)
+            || (end2 >= start && end2 <= end)
+            || encloses(start2, end2, start, end)
+    }
+
+    /** Returns true if the "inner" coords and totally enclosed by the "outer" coords. */
+    #[inline]
+    pub fn encloses(outer_start: i64, outer_end: i64, inner_start: i64, inner_end: i64) -> bool {
+        inner_start >= outer_start && inner_end <= outer_end
+    }
+
+    pub fn get_end(start: i64, length: u32) -> i64 {
+        start + length as i64 - 1
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn make_alignment_blocks() {}
 }
