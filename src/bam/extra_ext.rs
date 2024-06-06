@@ -149,7 +149,12 @@ const NO_ALIGNMENT_CIGAR: &str = "*";
 const NO_MAPPING_QUALITY: i32 = 0;
 
 pub trait RecordExt {
-    fn get_read_position_at_reference_position(&self, pos: i64, return_last_base_if_deleted: bool) -> i64;
+    fn read_pos_at_ref_pos(&self, pos: i64, return_last_base_if_deleted: bool) -> i64;
+    fn get_read_position_at_reference_position(
+        &self,
+        pos: i64,
+        return_last_base_if_deleted: bool,
+    ) -> i64;
     fn mate_start(&self) -> Result<i64, Error>;
     fn mate_end(&self) -> Result<i64, Error>;
     fn mates_overlap(&self) -> Result<bool, Error>;
@@ -333,7 +338,7 @@ impl RecordExt for Record {
         inplace: bool,
     ) {
         let mut read_bases = self.seq().encoded.to_vec();
-        reverse_complement(&mut read_bases);
+        reverse_complement_inplace(&mut read_bases);
 
         let mut qualities = self.qual().to_vec();
         qualities.reverse();
@@ -350,7 +355,7 @@ impl RecordExt for Record {
             if let Ok(mut value) = self.aux(tag.as_bytes()) {
                 if let Aux::ArrayU8(arr) = &value {
                     let mut arr = arr.iter().collect::<Vec<_>>();
-                    reverse_complement(&mut arr);
+                    reverse_complement_inplace(&mut arr);
 
                     value = Aux::ArrayU8(AuxArray::from_bytes(&arr));
 
@@ -358,7 +363,7 @@ impl RecordExt for Record {
                 } else if let Aux::String(s) = &value {
                     //SequenceUtil.reverseComplement is in-place for bytes but copies Strings since they are immutable.
                     let mut s = (*s).to_owned().into_bytes();
-                    reverse_complement(&mut s);
+                    reverse_complement_inplace(&mut s);
 
                     value = Aux::String(std::str::from_utf8(&s).unwrap());
                     remove_and_push!(self, tag, value);
@@ -444,11 +449,15 @@ impl RecordExt for Record {
         Ok(mc.pos())
     }
 
-    fn read_pos_at_ref_pos(pos: i64, return_last_base_if_deleted: bool) {
-        todo!()
+    fn read_pos_at_ref_pos(&self, pos: i64, return_last_base_if_deleted: bool) -> i64 {
+        self.get_read_position_at_reference_position(pos, return_last_base_if_deleted)
     }
 
-    fn get_read_position_at_reference_position(&self, pos: i64, return_last_base_if_deleted: bool) -> i64 {
+    fn get_read_position_at_reference_position(
+        &self,
+        pos: i64,
+        return_last_base_if_deleted: bool,
+    ) -> i64 {
         if pos <= 0 {
             return 0;
         }
@@ -467,16 +476,19 @@ impl RecordExt for Record {
                 if pos < alignment_block.get_reference_start() {
                     // There must have been a deletion block that skipped
                     if return_last_base_if_deleted {
-                        return last_alignment_offset
+                        return last_alignment_offset;
                     } else {
-                        return 0
+                        return 0;
                     }
                 } else {
-                    return pos - alignment_block.get_reference_start() + alignment_block.get_read_start() as i64 
+                    return pos - alignment_block.get_reference_start()
+                        + alignment_block.get_read_start() as i64;
                 }
             } else {
                 // record the offset to the last base in the current block, in case the next block starts too late
-                last_alignment_offset = alignment_block.get_read_start() as i64 + alignment_block.get_length() as i64 - 1;
+                last_alignment_offset = alignment_block.get_read_start() as i64
+                    + alignment_block.get_length() as i64
+                    - 1;
             }
         }
 
@@ -554,7 +566,7 @@ macro_rules! reverse_aux_array_and_set {
 pub(crate) use reverse_aux_array_and_set;
 
 /// convert a sequence into its reverse complement. (in-place)
-pub(crate) fn reverse_complement(seq: &mut [u8]) {
+pub fn reverse_complement_inplace(seq: &mut [u8]) {
     // let mut s = seq.to_string().into_bytes(); //seq.chars().collect::<Vec<char>>();
     let mut s_iter = seq.iter_mut();
 
@@ -580,6 +592,36 @@ pub(crate) fn reverse_complement(seq: &mut [u8]) {
 
     // String::from_utf8(seq).unwrap()
 }
+
+pub fn reverse_complement(mut seq: Vec<u8>) -> Vec<u8> {
+    // let mut s = seq.to_string().into_bytes(); //seq.chars().collect::<Vec<char>>();
+    let mut s_iter = seq.iter_mut();
+
+    loop {
+        match (s_iter.next(), s_iter.next_back()) {
+            (Some(f), Some(b)) => {
+                (*f, *b) = (get_complement_base(b), get_complement_base(f));
+            }
+            (Some(f), None) => {
+                *f = get_complement_base(f);
+                break;
+            }
+            (None, None) => {
+                break;
+            }
+            (None, Some(b)) => {
+                // this is unreachable.
+                unreachable!();
+                break;
+            }
+        }
+    }
+
+    // String::from_utf8(seq).unwrap()
+
+    seq
+}
+
 
 #[inline]
 fn get_complement_base(base: &u8) -> u8 {
@@ -738,6 +780,16 @@ impl CigarExt for Cigar {
 }
 
 pub trait CigarStringExt {
+    fn is_prefix_of(&self, that: &CigarString) -> bool;
+    /** Yields a new cigar that is truncated to the given length on the target. */
+    fn truncate_to_target_length(&self, len: u32) -> CigarString;
+    /** Yields a new cigar that is truncated to the given length on the query. */
+    fn truncate_to_query_length(&self, len: u32) -> CigarString;
+
+    fn trailing_soft_clipped_bases(&self) -> u32;
+    fn leading_soft_clipped_bases(&self) -> u32;
+    fn leading_hard_clipped_bases(&self) -> u32;
+    fn trailing_hard_clipped_bases(&self) -> u32;
     fn get_alignment_blocks(
         &self,
         alignment_start: i64,
@@ -811,6 +863,116 @@ impl CigarStringExt for CigarString {
 
         alignment_blocks
     }
+
+    fn trailing_hard_clipped_bases(&self) -> u32 {
+        self.last()
+            .map(|elem| {
+                if matches!(elem, Cigar::HardClip(_)) {
+                    elem.len()
+                } else {
+                    0
+                }
+            })
+            .unwrap_or_else(|| 0)
+    }
+
+    fn leading_hard_clipped_bases(&self) -> u32 {
+        self.first()
+            .map(|elem| {
+                if matches!(elem, Cigar::HardClip(_)) {
+                    elem.len()
+                } else {
+                    0
+                }
+            })
+            .unwrap_or_else(|| 0)
+    }
+
+    fn trailing_soft_clipped_bases(&self) -> u32 {
+        self.last()
+            .map(|elem| {
+                if matches!(elem, Cigar::SoftClip(_)) {
+                    elem.len()
+                } else {
+                    0
+                }
+            })
+            .unwrap_or_else(|| 0)
+    }
+
+    fn leading_soft_clipped_bases(&self) -> u32 {
+        self.first()
+            .map(|elem| {
+                if matches!(elem, Cigar::SoftClip(_)) {
+                    elem.len()
+                } else {
+                    0
+                }
+            })
+            .unwrap_or_else(|| 0)
+    }
+
+    fn truncate_to_query_length(&self, len: u32) -> CigarString {
+        truncate(self, len, |elem| elem.consumes_read_bases())
+    }
+
+    fn truncate_to_target_length(&self, len: u32) -> CigarString {
+        truncate(self, len, |elem| elem.consumes_reference_bases())
+    }
+
+    fn is_prefix_of(&self, that: &CigarString) -> bool {
+        if that.len() < self.len() {
+            false
+        } else {
+            let last_index = self.len() - 1;
+            let mut is_prefix = true;
+            let mut i = 0;
+
+            while is_prefix && i <= last_index {
+                let lhs = self.get(i).unwrap();
+                let rhs = that.get(i).unwrap();
+
+                is_prefix = std::mem::discriminant(lhs) == std::mem::discriminant(rhs) && {
+                    if i == last_index {
+                        lhs.len() <= rhs.len()
+                    } else {
+                        lhs.len() == rhs.len()
+                    }
+                };
+
+                i += 1;
+            }
+
+            is_prefix
+        }
+    }
+}
+
+/** Truncates the cigar based on either query or target length cutoff. */
+fn truncate(cigar_string: &CigarString, len: u32, should_count: fn(&Cigar) -> bool) -> CigarString {
+    let mut pos = 1_u32;
+    let mut iter = cigar_string.iter();
+    let mut new_elems = Vec::with_capacity(cigar_string.0.len());
+
+    while let Some((elem, true)) = iter.next().map(|e| (e, pos <= len)) {
+        if should_count(elem) {
+            let max_elem_length = (len - pos + 1) as u32;
+            new_elems.push(if elem.len() <= max_elem_length {
+                elem.clone()
+            } else {
+                let mut elem = elem.clone();
+                elem.modify_len(max_elem_length as u32);
+                elem
+            });
+
+            pos += elem.len() as u32;
+        } else {
+            new_elems.push(elem.clone());
+        }
+    }
+    new_elems.shrink_to_fit();
+
+    CigarString::from(new_elems)
 }
 
 /**
@@ -821,7 +983,7 @@ impl CigarStringExt for CigarString {
  *
  * @author Tim Fennell
  */
-struct AlignmentBlock {
+pub struct AlignmentBlock {
     read_start: u32,
     reference_start: i64,
     length: u32,
