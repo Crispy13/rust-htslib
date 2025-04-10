@@ -1123,6 +1123,85 @@ impl Record {
         }
     }
 
+    /// start index of the aligned query portion of the sequence (0-based,
+    /// inclusive).
+    ///
+    /// This the index of the first base of the read sequence
+    /// that is not soft-clipped.
+    pub fn query_alignment_start(&self) -> usize {
+        let cigar = self.cigar();
+
+        let mut start_idx = 0;
+        for cigar_elem in cigar.inner.0.into_iter() {
+            match cigar_elem {
+                Cigar::HardClip(l) => {
+                    if start_idx != 0 {
+                        panic!("Invalid clipping in CIGAR string")
+                    }
+                }
+                Cigar::SoftClip(l) => {
+                    start_idx += l as usize;
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+        start_idx
+    }
+
+    /// Returns the end index (0-based, exclusive) of the aligned query portion of the sequence.
+    /// That is, the index just past the last base that is not soft-clipped.
+    pub fn query_alignment_end(&self) -> usize {
+        // Retrieve the CIGAR operations.
+        let cigar = self.cigar();
+        // Start with the read's sequence length.
+        let mut end_offset = self.seq_len();
+
+        if end_offset == 0 {
+            // If there is no stored sequence length, compute it from the CIGAR string.
+            // Iterate forward over all CIGAR operators.
+            for cigar_elem in cigar.iter() {
+                match cigar_elem {
+                    // These operators consume query bases.
+                    Cigar::Match(l)
+                    | Cigar::Ins(l)
+                    | Cigar::Equal(l)
+                    | Cigar::Diff(l)
+                    | Cigar::SoftClip(l) if end_offset == 0 => {
+                        end_offset += *l as usize;
+                    }
+                    // Other operators (HardClip, Pad, etc.) are ignored in this computation.
+                    _ => {}
+                }
+            }
+        } else {
+            // Otherwise, there is a stored query sequence.
+            // Walk backwards over the CIGAR string from the _right end_.
+            // Note: The original Cython loop iterates from the last element down to (but not including) the 0th;
+            if cigar.len() > 1 {
+                for cigar_elem in cigar.inner.0.into_iter().skip(1).rev() {
+                    match cigar_elem {
+                        Cigar::HardClip(_l) => {
+                            // If a hard clip is encountered, then we expect it only
+                            // if no soft-clip was processed (i.e. end_offset should still equal seq_len()).
+                            if end_offset != self.seq_len() {
+                                panic!("Invalid clipping in CIGAR string");
+                            }
+                        }
+                        Cigar::SoftClip(l) => {
+                            // Remove trailing soft-clipped bases from the end_offset.
+                            end_offset -= l as usize;
+                        }
+                        // Stop at the first operator that isn’t a clipping.
+                        _ => break,
+                    }
+                }
+            }
+        }
+        end_offset
+    }
+
     flag!(is_paired, set_paired, unset_paired, 1u16);
     flag!(is_proper_pair, set_proper_pair, unset_proper_pair, 2u16);
     flag!(is_unmapped, set_unmapped, unset_unmapped, 4u16);
@@ -1647,6 +1726,11 @@ impl Seq<'_> {
     /// Return decoded sequence. Complexity: O(m) with m being the read length.
     pub fn as_bytes(&self) -> Vec<u8> {
         (0..self.len()).map(|i| self[i]).collect()
+    }
+
+    /// Return decoded base iterator. Complexity: O(m) with m being the read length.
+    pub fn decoded_base_iter(&self) -> impl DoubleEndedIterator<Item = u8> + use<'_> {
+        (0..self.len()).map(move |i| self[i])
     }
 
     /// Return length (in bases) of the sequence.
