@@ -2,7 +2,7 @@
 authors = ["Christopher Schröder <christopher.schroeder@tu-dortmund.de>", "Johannes Köster <johannes.koester@tu-dortmund.de>"]
 description = "This library provides HTSlib bindings and a high level Rust API for reading and writing BAM files."
 documentation = "https://docs.rs/rust-htslib"
-edition = "2018"
+edition = "2024"
 include = ["src/**/*", "LICENSE.md", "README.md", "CHANGELOG.md"]
 keywords = ["htslib", "bam", "bioinformatics", "pileup", "sequencing"]
 license = "MIT"

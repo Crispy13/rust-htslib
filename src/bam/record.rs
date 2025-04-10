@@ -1123,24 +1123,54 @@ impl Record {
         }
     }
 
+    /// aligned portion of the read.
+    ///
+    /// This is a substring of the read sequence that excludes flanking
+    /// bases that were `soft clipped` (None if not present). It
+    /// is equal to `seq().as_bytes()[query_alignment_start..query_alignment_end]`.
+    ///
+    /// SAM/BAM files may include extra flanking bases that are not
+    /// part of the alignment.  These bases may be the result of the
+    /// Smith-Waterman or other algorithms, which may not require
+    /// alignments that begin at the first residue or end at the last.
+    /// In addition, extra sequencing adapters, multiplex identifiers,
+    /// and low-quality bases that were not considered for alignment
+    /// may have been retained.
+    pub fn query_alignment_sequence(&self) -> Vec<u8> {
+        if self.seq_len() == 0 {
+            return vec![]
+        }
+
+        self.seq()
+            .decoded_base_iter()
+            .skip(self.query_alignment_start())
+            .take(self.query_alignment_end() - self.query_alignment_start())
+            .collect::<Vec<_>>()
+    }
+
     /// start index of the aligned query portion of the sequence (0-based,
     /// inclusive).
     ///
     /// This the index of the first base of the read sequence
     /// that is not soft-clipped.
     pub fn query_alignment_start(&self) -> usize {
-        let cigar = self.cigar();
+        let cigar = match self.cigar {
+            Some(ref c) => c,
+            None => &self.unpack_cigar(),
+        };
+
+        // let cigar = self.cigar();
 
         let mut start_idx = 0;
-        for cigar_elem in cigar.inner.0.into_iter() {
+        for cigar_elem in cigar.into_iter() {
             match cigar_elem {
-                Cigar::HardClip(l) => {
+                Cigar::HardClip(_l) => {
                     if start_idx != 0 {
                         panic!("Invalid clipping in CIGAR string")
                     }
                 }
                 Cigar::SoftClip(l) => {
-                    start_idx += l as usize;
+                    start_idx += *l as usize;
                 }
                 _ => {
                     break;
@@ -1154,7 +1184,11 @@ impl Record {
     /// That is, the index just past the last base that is not soft-clipped.
     pub fn query_alignment_end(&self) -> usize {
         // Retrieve the CIGAR operations.
-        let cigar = self.cigar();
+        let cigar = match self.cigar {
+            Some(ref c) => c,
+            None => &self.unpack_cigar(),
+        };
+
         // Start with the read's sequence length.
         let mut end_offset = self.seq_len();
 
@@ -1168,7 +1202,9 @@ impl Record {
                     | Cigar::Ins(l)
                     | Cigar::Equal(l)
                     | Cigar::Diff(l)
-                    | Cigar::SoftClip(l) if end_offset == 0 => {
+                    | Cigar::SoftClip(l)
+                        if end_offset == 0 =>
+                    {
                         end_offset += *l as usize;
                     }
                     // Other operators (HardClip, Pad, etc.) are ignored in this computation.
@@ -1180,7 +1216,7 @@ impl Record {
             // Walk backwards over the CIGAR string from the _right end_.
             // Note: The original Cython loop iterates from the last element down to (but not including) the 0th;
             if cigar.len() > 1 {
-                for cigar_elem in cigar.inner.0.into_iter().skip(1).rev() {
+                for cigar_elem in cigar.iter().skip(1).rev() {
                     match cigar_elem {
                         Cigar::HardClip(_l) => {
                             // If a hard clip is encountered, then we expect it only
@@ -1191,7 +1227,7 @@ impl Record {
                         }
                         Cigar::SoftClip(l) => {
                             // Remove trailing soft-clipped bases from the end_offset.
-                            end_offset -= l as usize;
+                            end_offset -= *l as usize;
                         }
                         // Stop at the first operator that isn’t a clipping.
                         _ => break,
