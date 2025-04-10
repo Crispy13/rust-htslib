@@ -10,6 +10,8 @@ pub enum Error {
     // General errors
     #[error("file not found: {path}")]
     FileNotFound { path: PathBuf },
+    #[error("file could not be opened: {path}")]
+    FileOpen { path: String },
     #[error("invalid (non-unicode) characters in path")]
     NonUnicodePath,
     #[error("failed to fetch region")]
@@ -33,6 +35,8 @@ pub enum Error {
     FaidxPositionTooLarge,
     #[error("bad conversion of sequence name")]
     FaidxBadSeqName,
+    #[error("failed to build index for fasta file {path:?}")]
+    FaidxBuildFailed { path: std::path::PathBuf },
 
     // Errors for Tbx
     #[error("previous iterator generation failed")]
@@ -129,6 +133,8 @@ pub enum Error {
     BcfSetValues,
     #[error("failed to remove alleles in BCF/VCF record")]
     BcfRemoveAlleles,
+    #[error("failed to render BCF record as string")]
+    BcfToString,
 
     #[error("invalid compression level {level}")]
     BgzfInvalidCompressionLevel { level: i8 },

@@ -87,7 +87,13 @@ impl Reader {
         let mode = ffi::CString::new("r").unwrap();
         let cpath = ffi::CString::new(path).unwrap();
         let inner = unsafe { htslib::bgzf_open(cpath.as_ptr(), mode.as_ptr()) };
-        Ok(Self { inner })
+        if inner != std::ptr::null_mut() {
+            Ok(Self { inner })
+        } else {
+            Err(Error::FileOpen {
+                path: String::from_utf8(path.to_vec()).unwrap(),
+            })
+        }
     }
 
     /// Set the thread pool to use for parallel decompression.
@@ -112,11 +118,7 @@ impl Reader {
 impl std::io::Read for Reader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let nbytes = unsafe {
-            htslib::bgzf_read(
-                self.inner,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len() as u64,
-            )
+            htslib::bgzf_read(self.inner, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
         };
         if nbytes < 0 {
             Err(std::io::Error::new(
@@ -215,7 +217,13 @@ impl Writer {
         let mode = Self::get_open_mode(level)?;
         let cpath = ffi::CString::new(path).unwrap();
         let inner = unsafe { htslib::bgzf_open(cpath.as_ptr(), mode.as_ptr()) };
-        Ok(Self { inner, tpool: None })
+        if inner != std::ptr::null_mut() {
+            Ok(Self { inner, tpool: None })
+        } else {
+            Err(Error::FileOpen {
+                path: String::from_utf8(path.to_vec()).unwrap(),
+            })
+        }
     }
 
     /// Internal function to convert compression level to "mode"
@@ -257,13 +265,8 @@ impl Writer {
 
 impl std::io::Write for Writer {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let nbytes = unsafe {
-            htslib::bgzf_write(
-                self.inner,
-                buf.as_ptr() as *mut libc::c_void,
-                buf.len() as u64,
-            )
-        };
+        let nbytes =
+            unsafe { htslib::bgzf_write(self.inner, buf.as_ptr() as *mut libc::c_void, buf.len()) };
         if nbytes < 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,

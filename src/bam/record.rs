@@ -117,12 +117,23 @@ fn extranul_from_qname(qname: &[u8]) -> usize {
 impl Record {
     /// Create an empty BAM record.
     pub fn new() -> Self {
-        Record {
+        let mut record = Record {
             inner: unsafe { MaybeUninit::zeroed().assume_init() },
             own: true,
             cigar: None,
             header: None,
-        }
+        };
+        // The read/query name needs to be set as empty to properly initialize
+        // the record
+        record.set_qname(b"");
+        // Developer note: these are needed so the returned record is properly
+        // initialized as unmapped.
+        record.set_unmapped();
+        record.set_tid(-1);
+        record.set_pos(-1);
+        record.set_mpos(-1);
+        record.set_mtid(-1);
+        record
     }
 
     pub fn from_inner(from: *mut htslib::bam1_t) -> Self {
@@ -155,8 +166,8 @@ impl Record {
 
         let mut sam_string = htslib::kstring_t {
             s: sam_copy.as_ptr() as *mut c_char,
-            l: sam_copy.len() as u64,
-            m: sam_copy.len() as u64,
+            l: sam_copy.len(),
+            m: sam_copy.len(),
         };
 
         let succ = unsafe {
@@ -296,12 +307,12 @@ impl Record {
 
     /// Get insert size.
     pub fn insert_size(&self) -> i64 {
-        self.inner().core.isize
+        self.inner().core.isize_
     }
 
     /// Set insert size.
     pub fn set_insert_size(&mut self, insert_size: i64) {
-        self.inner_mut().core.isize = insert_size;
+        self.inner_mut().core.isize_ = insert_size;
     }
 
     fn qname_capacity(&self) -> usize {
@@ -1131,30 +1142,36 @@ impl Record {
                 return SequenceReadPairOrientation::None;
             }
 
-            let (is_reverse, is_first_in_template, is_mate_reverse) = if self.pos() < self.mpos() {
-                // given record is the left one
+            let (pos_1, pos_2, fwd_1, fwd_2) = if self.is_first_in_template() {
                 (
-                    self.is_reverse(),
-                    self.is_first_in_template(),
-                    self.is_mate_reverse(),
+                    self.pos(),
+                    self.mpos(),
+                    !self.is_reverse(),
+                    !self.is_mate_reverse(),
                 )
             } else {
-                // given record is the right one
                 (
-                    self.is_mate_reverse(),
-                    self.is_last_in_template(),
-                    self.is_reverse(),
+                    self.mpos(),
+                    self.pos(),
+                    !self.is_mate_reverse(),
+                    !self.is_reverse(),
                 )
             };
-            match (is_reverse, is_first_in_template, is_mate_reverse) {
-                (false, false, false) => SequenceReadPairOrientation::F2F1,
-                (false, false, true) => SequenceReadPairOrientation::F2R1,
-                (false, true, false) => SequenceReadPairOrientation::F1F2,
-                (true, false, false) => SequenceReadPairOrientation::R2F1,
-                (false, true, true) => SequenceReadPairOrientation::F1R2,
-                (true, false, true) => SequenceReadPairOrientation::R2R1,
-                (true, true, false) => SequenceReadPairOrientation::R1F2,
-                (true, true, true) => SequenceReadPairOrientation::R1R2,
+
+            if pos_1 < pos_2 {
+                match (fwd_1, fwd_2) {
+                    (true, true) => SequenceReadPairOrientation::F1F2,
+                    (true, false) => SequenceReadPairOrientation::F1R2,
+                    (false, true) => SequenceReadPairOrientation::R1F2,
+                    (false, false) => SequenceReadPairOrientation::R1R2,
+                }
+            } else {
+                match (fwd_2, fwd_1) {
+                    (true, true) => SequenceReadPairOrientation::F2F1,
+                    (true, false) => SequenceReadPairOrientation::F2R1,
+                    (false, true) => SequenceReadPairOrientation::R2F1,
+                    (false, false) => SequenceReadPairOrientation::R2R1,
+                }
             }
         } else {
             SequenceReadPairOrientation::None
@@ -2140,10 +2157,15 @@ impl CigarStringView {
                     }
                     break;
                 },
-                Cigar::Del(_) => {
-                    return Err(Error::BamUnexpectedCigarOperation {
-                        msg: "'deletion' (D) found before any operation describing read sequence".to_owned()
-                    });
+                Cigar::Del(l) => {
+                    // METHOD: leading deletions can happen in case of trimmed reads where
+                    // a primer has been removed AFTER read mapping.
+                    // Example: 24M8I8D18M9S before trimming, 32H8D18M9S after trimming
+                    // with fgbio. While leading deletions should be impossible with
+                    // normal read mapping, they make perfect sense with primer trimming
+                    // because the mapper still had the evidence to decide in favor of
+                    // the deletion via the primer sequence.
+                    rpos += l;
                 },
                 Cigar::RefSkip(_) => {
                     return Err(Error::BamUnexpectedCigarOperation {
@@ -2898,6 +2920,32 @@ mod alignment_cigar_tests {
             assert_eq!(
                 record.read_pair_orientation(),
                 SequenceReadPairOrientation::F1R2
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_orientation_f2r1() {
+        let mut bam = Reader::from_path(&"test/test_nonstandard_orientation.sam").unwrap();
+
+        for res in bam.records() {
+            let record = res.unwrap();
+            assert_eq!(
+                record.read_pair_orientation(),
+                SequenceReadPairOrientation::F2R1
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_orientation_supplementary() {
+        let mut bam = Reader::from_path(&"test/test_orientation_supplementary.sam").unwrap();
+
+        for res in bam.records() {
+            let record = res.unwrap();
+            assert_eq!(
+                record.read_pair_orientation(),
+                SequenceReadPairOrientation::F2R1
             );
         }
     }

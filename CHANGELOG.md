@@ -2,6 +2,54 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [0.49.0](https://github.com/rust-bio/rust-htslib/compare/v0.48.0...v0.49.0) (2024-12-02)
+
+
+### Features
+
+* move empty_record to header ([#453](https://github.com/rust-bio/rust-htslib/issues/453)) ([797965c](https://github.com/rust-bio/rust-htslib/commit/797965c5ab815112b1a2a1bcdb32716c1bc1f92a))
+
+
+### Bug Fixes
+
+* memory leak in faidx when fetching sequences ([#455](https://github.com/rust-bio/rust-htslib/issues/455)) ([d9fe03a](https://github.com/rust-bio/rust-htslib/commit/d9fe03acfb81278a09a7e6091b9e1c38dd7b6cb4))
+
+## [0.48.0](https://github.com/rust-bio/rust-htslib/compare/v0.47.1...v0.48.0) (2024-11-12)
+
+
+### Features
+
+* Add to_vcf_string method for bcf::Record ([#443](https://github.com/rust-bio/rust-htslib/issues/443)) ([489c0d7](https://github.com/rust-bio/rust-htslib/commit/489c0d7677445cfe38580c8d4c843ad4f4e2d827))
+
+
+### Bug Fixes
+
+* return error when bgzf_open fails to open a file ([#444](https://github.com/rust-bio/rust-htslib/issues/444)) ([9bda5f7](https://github.com/rust-bio/rust-htslib/commit/9bda5f768a5c54767c7e08ef1cafd28ff3f2a3b3))
+
+## [0.47.1](https://github.com/rust-bio/rust-htslib/compare/v0.47.0...v0.47.1) (2024-11-12)
+
+
+### Bug Fixes
+
+* allow leading deletions in read_pos method of CigarStringView. ([#447](https://github.com/rust-bio/rust-htslib/issues/447)) ([2986713](https://github.com/rust-bio/rust-htslib/commit/298671382ffeab8f1f057cde83e8474963fbfb9a))
+
+## [0.47.0](https://github.com/rust-bio/rust-htslib/compare/v0.46.0...v0.47.0) (2024-05-22)
+
+
+### Features
+
+* Add fasta::build function + FaidxBuildError ([#418](https://github.com/rust-bio/rust-htslib/issues/418)) ([7c575ef](https://github.com/rust-bio/rust-htslib/commit/7c575ef549908745f34d9371986551f3d70ed444))
+* Add rust_htslib::bcf::index::build ([#408](https://github.com/rust-bio/rust-htslib/issues/408)) ([79d70cd](https://github.com/rust-bio/rust-htslib/commit/79d70cd6683f1a019e9052baa495dada709db432))
+* derive PartialEq and Eq for bam:: and bcf::Format ([#428](https://github.com/rust-bio/rust-htslib/issues/428)) ([528e543](https://github.com/rust-bio/rust-htslib/commit/528e54367367487a28bbc2566bd37de995f8ed1d))
+
+
+### Bug Fixes
+
+* bam::Record:new should return a valid record ([#361](https://github.com/rust-bio/rust-htslib/issues/361)) ([87f2011](https://github.com/rust-bio/rust-htslib/commit/87f20116c4337eda17a416ebafb8976abc188d87))
+* build for macOS ([#431](https://github.com/rust-bio/rust-htslib/issues/431)) ([d869fdd](https://github.com/rust-bio/rust-htslib/commit/d869fdda03900cafae0f4f60b033121dcd57b723))
+* in bam record buffer, change the start of the window to the first added item in last iteration ([#430](https://github.com/rust-bio/rust-htslib/issues/430)) ([56ee2bd](https://github.com/rust-bio/rust-htslib/commit/56ee2bd562788dad0dc8516d0e3db90ffa916320))
+* Panic on trailing omitted FORMAT records ([#417](https://github.com/rust-bio/rust-htslib/issues/417)) ([9f575ee](https://github.com/rust-bio/rust-htslib/commit/9f575ee40e15737731bc8234812c0cf36c1157f4))
+
 ## [0.46.0](https://github.com/rust-bio/rust-htslib/compare/v0.45.0...v0.46.0) (2024-02-22)
 
 
