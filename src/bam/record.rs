@@ -14,8 +14,6 @@ use std::os::raw::c_char;
 use std::rc::Rc;
 use std::slice;
 use std::str;
-use std::sync::OnceLock;
-use std::u32;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use linear_map::LinearMap;
@@ -139,7 +137,7 @@ impl Record {
     pub fn from_inner(from: *mut htslib::bam1_t) -> Self {
         Record {
             inner: {
-                #[allow(clippy::uninit_assumed_init)]
+                #[allow(clippy::uninit_assumed_init, invalid_value)]
                 let mut inner = unsafe { MaybeUninit::uninit().assume_init() };
                 unsafe {
                     ::libc::memcpy(
@@ -419,7 +417,7 @@ impl Record {
         // seq
         {
             for j in (0..seq.len()).step_by(2) {
-                data[i + j / 2] = ENCODE_BASE[seq[j] as usize] << 4
+                data[i + j / 2] = (ENCODE_BASE[seq[j] as usize] << 4)
                     | (if j + 1 < seq.len() {
                         ENCODE_BASE[seq[j + 1] as usize]
                     } else {
@@ -865,7 +863,7 @@ impl Record {
                     ctag,
                     b'A' as c_char,
                     size_of::<u8>() as i32,
-                    [v].as_mut_ptr() as *mut u8,
+                    [v].as_mut_ptr(),
                 ),
                 Aux::I8(v) => htslib::bam_aux_append(
                     self.inner_ptr_mut(),
@@ -879,7 +877,7 @@ impl Record {
                     ctag,
                     b'C' as c_char,
                     size_of::<u8>() as i32,
-                    [v].as_mut_ptr() as *mut u8,
+                    [v].as_mut_ptr(),
                 ),
                 Aux::I16(v) => htslib::bam_aux_append(
                     self.inner_ptr_mut(),
@@ -1090,7 +1088,7 @@ impl Record {
     /// Example:
     /// ```
     ///    use rust_htslib::bam::{Read, Reader, Record};
-    ///    let mut bam = Reader::from_path(&"test/base_mods/MM-orient.sam").unwrap();
+    ///    let mut bam = Reader::from_path("test/base_mods/MM-orient.sam").unwrap();
     ///    let mut mod_count = 0;
     ///    for r in bam.records() {
     ///        let record = r.unwrap();
@@ -1435,8 +1433,8 @@ pub enum Aux<'a> {
     ArrayFloat(AuxArray<'a, f32>),
 }
 
-unsafe impl<'a> Send for Aux<'a> {}
-unsafe impl<'a> Sync for Aux<'a> {}
+unsafe impl Send for Aux<'_> {}
+unsafe impl Sync for Aux<'_> {}
 
 /// Types that can be used in aux arrays.
 pub trait AuxArrayElement: Copy {
@@ -1605,7 +1603,7 @@ pub struct AuxArrayTargetType<'a, T> {
     slice: &'a [T],
 }
 
-impl<'a, T> AuxArrayTargetType<'a, T>
+impl<T> AuxArrayTargetType<'_, T>
 where
     T: AuxArrayElement,
 {
@@ -1626,7 +1624,7 @@ pub struct AuxArrayRawLeBytes<'a, T> {
     phantom_data: PhantomData<T>,
 }
 
-impl<'a, T> AuxArrayRawLeBytes<'a, T>
+impl<T> AuxArrayRawLeBytes<'_, T>
 where
     T: AuxArrayElement,
 {
@@ -1704,10 +1702,9 @@ impl<'a> Iterator for AuxIter<'a> {
                     self.aux = &self.aux[offset..];
                     (tag, aux)
                 })
-                .map_err(|e| {
+                .inspect_err(|_e| {
                     // In the case of an error, we can not safely advance in the aux data, so we terminate the Iteration
                     self.aux = &[];
-                    e
                 })
         })
     }
@@ -1750,7 +1747,7 @@ pub struct Seq<'a> {
     len: usize,
 }
 
-impl<'a> Seq<'a> {
+impl Seq<'_> {
     /// Return encoded base. Complexity: O(1).
     #[inline]
     pub fn encoded_base(&self, i: usize) -> u8 {
@@ -1758,6 +1755,10 @@ impl<'a> Seq<'a> {
     }
 
     /// Return encoded base. Complexity: O(1).
+    ///
+    /// # Safety
+    ///
+    /// TODO
     #[inline]
     pub unsafe fn encoded_base_unchecked(&self, i: usize) -> u8 {
         encoded_base_unchecked(self.encoded, i)
@@ -1766,6 +1767,10 @@ impl<'a> Seq<'a> {
     /// Obtain decoded base without performing bounds checking.
     /// Use index based access seq()[i], for checked, safe access.
     /// Complexity: O(1).
+    ///
+    /// # Safety
+    ///
+    /// TODO
     #[inline]
     pub unsafe fn decoded_base_unchecked(&self, i: usize) -> u8 {
         *decode_base_unchecked(self.encoded_base_unchecked(i))
@@ -1791,7 +1796,7 @@ impl<'a> Seq<'a> {
     }
 }
 
-impl<'a> ops::Index<usize> for Seq<'a> {
+impl ops::Index<usize> for Seq<'_> {
     type Output = u8;
 
     /// Return decoded base at given position within read. Complexity: O(1).
@@ -1800,8 +1805,8 @@ impl<'a> ops::Index<usize> for Seq<'a> {
     }
 }
 
-unsafe impl<'a> Send for Seq<'a> {}
-unsafe impl<'a> Sync for Seq<'a> {}
+unsafe impl Send for Seq<'_> {}
+unsafe impl Sync for Seq<'_> {}
 
 #[cfg_attr(feature = "serde_feature", derive(Serialize, Deserialize))]
 #[derive(PartialEq, PartialOrd, Eq, Debug, Clone, Copy, Hash)]
@@ -1821,14 +1826,14 @@ impl Cigar {
     fn encode(self) -> u32 {
         match self {
             Cigar::Match(len) => len << 4, // | 0,
-            Cigar::Ins(len) => len << 4 | 1,
-            Cigar::Del(len) => len << 4 | 2,
-            Cigar::RefSkip(len) => len << 4 | 3,
-            Cigar::SoftClip(len) => len << 4 | 4,
-            Cigar::HardClip(len) => len << 4 | 5,
-            Cigar::Pad(len) => len << 4 | 6,
-            Cigar::Equal(len) => len << 4 | 7,
-            Cigar::Diff(len) => len << 4 | 8,
+            Cigar::Ins(len) => (len << 4) | 1,
+            Cigar::Del(len) => (len << 4) | 2,
+            Cigar::RefSkip(len) => (len << 4) | 3,
+            Cigar::SoftClip(len) => (len << 4) | 4,
+            Cigar::HardClip(len) => (len << 4) | 5,
+            Cigar::Pad(len) => (len << 4) | 6,
+            Cigar::Equal(len) => (len << 4) | 7,
+            Cigar::Diff(len) => (len << 4) | 8,
         }
     }
 
@@ -2412,7 +2417,7 @@ impl BaseModificationState<'_> {
     /// This function allocates memory for the state structure
     /// and initializes the iterator to the start of the modification
     /// records.
-    fn new<'a>(r: &'a Record) -> Result<BaseModificationState<'a>> {
+    fn new(r: &Record) -> Result<BaseModificationState<'_>> {
         let mut bm = unsafe {
             BaseModificationState {
                 record: r,
@@ -2436,7 +2441,7 @@ impl BaseModificationState<'_> {
 
         let types = bm.recorded();
         bm.buffer.reserve(types.len());
-        return Ok(bm);
+        Ok(bm)
     }
 
     pub fn buffer_next_mods(&mut self) -> Result<usize> {
@@ -2464,7 +2469,7 @@ impl BaseModificationState<'_> {
             // not update the length so needs to be manually set
             self.buffer.set_len(ret as usize);
 
-            return Ok(ret as usize);
+            Ok(ret as usize)
         }
     }
 
@@ -2480,7 +2485,7 @@ impl BaseModificationState<'_> {
                 panic!("Unable to obtain pointer to base modifications");
             }
             assert!(n >= 0);
-            return slice::from_raw_parts(data_ptr, n as usize);
+            slice::from_raw_parts(data_ptr, n as usize)
         }
     }
 
@@ -2489,7 +2494,7 @@ impl BaseModificationState<'_> {
     /// and the ascii code for the canonical base.
     /// If there are multiple modifications with the same code this will return the data
     /// for the first mod.  See https://github.com/samtools/htslib/issues/1635
-    pub fn query_type<'a>(&self, code: i32) -> Result<BaseModificationMetadata> {
+    pub fn query_type(&self, code: i32) -> Result<BaseModificationMetadata> {
         unsafe {
             let mut strand: i32 = 0;
             let mut implicit: i32 = 0;
@@ -2504,13 +2509,13 @@ impl BaseModificationState<'_> {
                 &mut canonical,
             );
             if ret == -1 {
-                return Err(Error::BamBaseModificationTypeNotFound);
+                Err(Error::BamBaseModificationTypeNotFound)
             } else {
-                return Ok(BaseModificationMetadata {
+                Ok(BaseModificationMetadata {
                     strand,
                     implicit,
                     canonical: canonical.try_into().unwrap(),
-                });
+                })
             }
         }
     }
@@ -2531,21 +2536,21 @@ pub struct BaseModificationsPositionIter<'a> {
 }
 
 impl BaseModificationsPositionIter<'_> {
-    fn new<'a>(r: &'a Record) -> Result<BaseModificationsPositionIter<'a>> {
+    fn new(r: &Record) -> Result<BaseModificationsPositionIter<'_>> {
         let state = BaseModificationState::new(r)?;
         Ok(BaseModificationsPositionIter { mod_state: state })
     }
 
     pub fn recorded<'a>(&self) -> &'a [i32] {
-        return self.mod_state.recorded();
+        self.mod_state.recorded()
     }
 
-    pub fn query_type<'a>(&self, code: i32) -> Result<BaseModificationMetadata> {
-        return self.mod_state.query_type(code);
+    pub fn query_type(&self, code: i32) -> Result<BaseModificationMetadata> {
+        self.mod_state.query_type(code)
     }
 }
 
-impl<'a> Iterator for BaseModificationsPositionIter<'a> {
+impl Iterator for BaseModificationsPositionIter<'_> {
     type Item = Result<(i32, Vec<hts_sys::hts_base_mod>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2558,13 +2563,13 @@ impl<'a> Iterator for BaseModificationsPositionIter<'a> {
         match ret {
             Ok(num_mods) => {
                 if num_mods == 0 {
-                    return None;
+                    None
                 } else {
                     let data = (self.mod_state.buffer_pos, self.mod_state.buffer.clone());
-                    return Some(Ok(data));
+                    Some(Ok(data))
                 }
             }
-            Err(e) => return Some(Err(e)),
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -2577,7 +2582,7 @@ pub struct BaseModificationsIter<'a> {
 }
 
 impl BaseModificationsIter<'_> {
-    fn new<'a>(r: &'a Record) -> Result<BaseModificationsIter<'a>> {
+    fn new(r: &Record) -> Result<BaseModificationsIter<'_>> {
         let state = BaseModificationState::new(r)?;
         Ok(BaseModificationsIter {
             mod_state: state,
@@ -2586,15 +2591,15 @@ impl BaseModificationsIter<'_> {
     }
 
     pub fn recorded<'a>(&self) -> &'a [i32] {
-        return self.mod_state.recorded();
+        self.mod_state.recorded()
     }
 
-    pub fn query_type<'a>(&self, code: i32) -> Result<BaseModificationMetadata> {
-        return self.mod_state.query_type(code);
+    pub fn query_type(&self, code: i32) -> Result<BaseModificationMetadata> {
+        self.mod_state.query_type(code)
     }
 }
 
-impl<'a> Iterator for BaseModificationsIter<'a> {
+impl Iterator for BaseModificationsIter<'_> {
     type Item = Result<(i32, hts_sys::hts_base_mod)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2624,7 +2629,7 @@ impl<'a> Iterator for BaseModificationsIter<'a> {
             self.mod_state.buffer[self.buffer_idx],
         );
         self.buffer_idx += 1;
-        return Some(Ok(data));
+        Some(Ok(data))
     }
 }
 
@@ -2997,7 +3002,7 @@ mod alignment_cigar_tests {
 
     #[test]
     fn test_read_orientation_f1r2() {
-        let mut bam = Reader::from_path(&"test/test_paired.sam").unwrap();
+        let mut bam = Reader::from_path("test/test_paired.sam").unwrap();
 
         for res in bam.records() {
             let record = res.unwrap();
@@ -3010,7 +3015,7 @@ mod alignment_cigar_tests {
 
     #[test]
     fn test_read_orientation_f2r1() {
-        let mut bam = Reader::from_path(&"test/test_nonstandard_orientation.sam").unwrap();
+        let mut bam = Reader::from_path("test/test_nonstandard_orientation.sam").unwrap();
 
         for res in bam.records() {
             let record = res.unwrap();
@@ -3023,7 +3028,7 @@ mod alignment_cigar_tests {
 
     #[test]
     fn test_read_orientation_supplementary() {
-        let mut bam = Reader::from_path(&"test/test_orientation_supplementary.sam").unwrap();
+        let mut bam = Reader::from_path("test/test_orientation_supplementary.sam").unwrap();
 
         for res in bam.records() {
             let record = res.unwrap();
@@ -3048,7 +3053,7 @@ mod alignment_cigar_tests {
     #[test]
     pub fn test_cigar_parsing() {
         // parsing test cases
-        let cigar_strs = vec![
+        let cigar_strs = [
             "1H10M4D100I300N1102=10P25X11S", // test every cigar opt
             "100M",                          // test a single op
             "",                              // test empty input
@@ -3059,7 +3064,7 @@ mod alignment_cigar_tests {
             "10S",
         ];
         // expected results
-        let cigars = vec![
+        let cigars = [
             CigarString(vec![
                 Cigar::HardClip(1),
                 Cigar::Match(10),
@@ -3096,7 +3101,7 @@ mod alignment_cigar_tests {
         // compare
         for (&cigar_str, truth) in cigar_strs.iter().zip(cigars.iter()) {
             let cigar_parse = CigarString::try_from(cigar_str)
-                .expect(&format!("Unable to parse cigar: {}", cigar_str));
+                .unwrap_or_else(|_| panic!("Unable to parse cigar: {}", cigar_str));
             assert_eq!(&cigar_parse, truth);
         }
     }
@@ -3141,7 +3146,7 @@ mod basemod_tests {
 
     #[test]
     pub fn test_count_recorded() {
-        let mut bam = Reader::from_path(&"test/base_mods/MM-double.sam").unwrap();
+        let mut bam = Reader::from_path("test/base_mods/MM-double.sam").unwrap();
 
         for r in bam.records() {
             let record = r.unwrap();
@@ -3154,7 +3159,7 @@ mod basemod_tests {
 
     #[test]
     pub fn test_query_type() {
-        let mut bam = Reader::from_path(&"test/base_mods/MM-orient.sam").unwrap();
+        let mut bam = Reader::from_path("test/base_mods/MM-orient.sam").unwrap();
 
         let mut n_fwd = 0;
         let mut n_rev = 0;
@@ -3180,36 +3185,34 @@ mod basemod_tests {
 
     #[test]
     pub fn test_mod_iter() {
-        let mut bam = Reader::from_path(&"test/base_mods/MM-double.sam").unwrap();
+        let mut bam = Reader::from_path("test/base_mods/MM-double.sam").unwrap();
         let expected_positions = [1, 7, 12, 13, 13, 22, 30, 31];
         let mut i = 0;
 
         for r in bam.records() {
             let record = r.unwrap();
-            for res in record.basemods_iter().unwrap() {
-                if let Ok((position, _m)) = res {
-                    assert_eq!(position, expected_positions[i]);
-                    i += 1;
-                }
+            for res in record.basemods_iter().unwrap().flatten() {
+                let (position, _m) = res;
+                assert_eq!(position, expected_positions[i]);
+                i += 1;
             }
         }
     }
 
     #[test]
     pub fn test_position_iter() {
-        let mut bam = Reader::from_path(&"test/base_mods/MM-double.sam").unwrap();
+        let mut bam = Reader::from_path("test/base_mods/MM-double.sam").unwrap();
         let expected_positions = [1, 7, 12, 13, 22, 30, 31];
         let expected_counts = [1, 1, 1, 2, 1, 1, 1];
         let mut i = 0;
 
         for r in bam.records() {
             let record = r.unwrap();
-            for res in record.basemods_position_iter().unwrap() {
-                if let Ok((position, elements)) = res {
-                    assert_eq!(position, expected_positions[i]);
-                    assert_eq!(elements.len(), expected_counts[i]);
-                    i += 1;
-                }
+            for res in record.basemods_position_iter().unwrap().flatten() {
+                let (position, elements) = res;
+                assert_eq!(position, expected_positions[i]);
+                assert_eq!(elements.len(), expected_counts[i]);
+                i += 1;
             }
         }
     }

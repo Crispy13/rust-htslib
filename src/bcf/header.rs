@@ -113,12 +113,14 @@ impl Header {
             .map(|&s| ffi::CString::new(s).unwrap())
             .collect();
         let name_pointers: Vec<_> = names.iter().map(|s| s.as_ptr() as *mut i8).collect();
+        #[allow(clippy::unnecessary_cast)]
+        let name_pointers_ptr = name_pointers.as_ptr() as *const *mut c_char;
         let inner = unsafe {
             htslib::bcf_hdr_subset(
                 header.inner,
                 samples.len() as i32,
-                name_pointers.as_ptr() as *const *mut c_char,
-                imap.as_mut_ptr() as *mut i32,
+                name_pointers_ptr,
+                imap.as_mut_ptr(),
             )
         };
         if inner.is_null() {
@@ -373,7 +375,7 @@ impl HeaderView {
             let n = (*self.inner).n[htslib::BCF_DT_ID as usize] as usize;
             let entry = slice::from_raw_parts((*self.inner).id[htslib::BCF_DT_ID as usize], n);
             let d = (*entry[id as usize].val).info[hdr_type as usize];
-            (d >> 4 & 0xf, d >> 8 & 0xf, d >> 12)
+            ((d >> 4) & 0xf, (d >> 8) & 0xf, d >> 12)
         };
         let _type = match _type as ::libc::c_uint {
             htslib::BCF_HT_FLAG => TagType::Flag,
@@ -551,7 +553,6 @@ pub enum TagLength {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::bcf::Reader;
 
     #[test]
