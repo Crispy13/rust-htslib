@@ -1148,6 +1148,18 @@ impl Record {
             .collect::<Vec<_>>()
     }
 
+    pub fn query_alignment_base_iter(&self) -> impl Iterator<Item = u8>  {
+        // if self.seq_len() == 0 {
+        //     return std::iter::empty()
+        // }
+
+        self.seq()
+            .into_decoded_base_iter()
+            .skip(self.query_alignment_start())
+            .take(self.query_alignment_end() - self.query_alignment_start())
+            // .collect::<Vec<_>>()
+    }
+
     /// start index of the aligned query portion of the sequence (0-based,
     /// inclusive).
     ///
@@ -1766,6 +1778,11 @@ impl Seq<'_> {
 
     /// Return decoded base iterator. Complexity: O(m) with m being the read length.
     pub fn decoded_base_iter(&self) -> impl DoubleEndedIterator<Item = u8> + use<'_> {
+        (0..self.len()).map(move |i| self[i])
+    }
+
+    /// Return decoded base iterator. Complexity: O(m) with m being the read length.
+    pub fn into_decoded_base_iter(self) -> impl DoubleEndedIterator<Item = u8> {
         (0..self.len()).map(move |i| self[i])
     }
 

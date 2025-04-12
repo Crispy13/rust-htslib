@@ -26,6 +26,8 @@ pub enum Error {
     SetThreads,
     #[error("failed to create htslib thread pool")]
     ThreadPool,
+    // #[error("failed to make temp file")]
+    // TempFileError,
 
     #[error("failed to write BAM/BCF record (out of disk space?)")]
     WriteRecord,
