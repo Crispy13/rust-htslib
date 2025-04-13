@@ -53,7 +53,7 @@ pub struct Record {
     pub inner: htslib::bam1_t,
     own: bool,
     cigar: Option<CigarStringView>,
-    header: Option<Rc<HeaderView>>,
+    pub(crate) header: Option<Rc<HeaderView>>,
 }
 
 unsafe impl Send for Record {}

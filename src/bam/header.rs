@@ -48,6 +48,10 @@ impl Header {
         }
     }
 
+    pub(crate) fn records_mut(&mut self) -> &mut Vec<Vec<u8>> {
+        &mut self.records
+    }
+
     /// Add a record to the header.
     pub fn push_record(&mut self, record: &HeaderRecord<'_>) -> &mut Self {
         self.records.push(record.to_bytes());
