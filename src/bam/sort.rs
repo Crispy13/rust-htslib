@@ -1,10 +1,17 @@
-use rayon::slice::ParallelSliceMut;
-use regex::{CaptureMatches, Regex, bytes};
+use rayon::{
+    iter::{
+        IndexedParallelIterator, IntoParallelRefIterator, ParallelDrainRange, ParallelIterator,
+    },
+    slice::ParallelSliceMut,
+};
+use regex::{CaptureMatches, Matches, Regex, bytes};
 use tempfile::NamedTempFile;
 
 use super::{Read as _, record::Record};
 use anyhow::{Error, anyhow};
 use std::{
+    borrow::Borrow,
+    cell::{LazyCell, OnceCell},
     cmp::Ordering,
     collections::{BinaryHeap, HashSet},
     num::NonZero,
@@ -18,7 +25,8 @@ TODO:
 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SortBy {
-    QueryName,
+    QueryNameLexi,
+    QueryNameNatural,
     Coordinate,
 }
 
@@ -26,7 +34,7 @@ impl SortBy {
     #[allow(non_snake_case)]
     const fn SO_str(&self) -> &'static str {
         match self {
-            SortBy::QueryName => "queryname",
+            SortBy::QueryNameLexi | SortBy::QueryNameNatural => "queryname",
             SortBy::Coordinate => "coordinate",
         }
     }
@@ -36,7 +44,24 @@ impl SortBy {
     #[inline]
     fn compare(&self, a: &Record, b: &Record) -> Ordering {
         match self {
-            SortBy::QueryName => a.qname().cmp(b.qname()),
+            SortBy::QueryNameLexi => {
+                match a.qname().cmp(b.qname()) {
+                    Ordering::Equal => {}
+                    oth => return oth,
+                }
+                Self::compare_read_num(a, b)
+            }
+            SortBy::QueryNameNatural => {
+                match natural_sort_cmp(
+                    std::str::from_utf8(a.qname()).unwrap(),
+                    std::str::from_utf8(b.qname()).unwrap(),
+                ) {
+                    Ordering::Equal => {}
+                    oth => return oth,
+                }
+
+                Self::compare_read_num(a, b)
+            }
             SortBy::Coordinate => {
                 let tid_cmp = a.tid().cmp(&b.tid());
                 if tid_cmp == Ordering::Equal {
@@ -48,13 +73,181 @@ impl SortBy {
         }
     }
 
+    #[inline]
+    fn compare_read_num(a: &Record, b: &Record) -> Ordering {
+        {
+            if a.is_first_in_template() {
+                1
+            } else if a.is_last_in_template() {
+                2
+            } else {
+                unreachable!()
+            }
+        }
+        .cmp(&{
+            if b.is_first_in_template() {
+                1
+            } else if b.is_last_in_template() {
+                2
+            } else {
+                unreachable!()
+            }
+        })
+    }
+
+    #[inline]
     fn equal(&self, a: &Record, b: &Record) -> bool {
         match self {
-            SortBy::QueryName => a.qname().eq(b.qname()),
+            SortBy::QueryNameLexi | SortBy::QueryNameNatural => a.qname().eq(b.qname()),
             SortBy::Coordinate => a.tid().eq(&b.tid()) && a.pos().eq(&b.pos()),
         }
     }
 }
+
+/// ## NOTE:  
+/// This is self-referential struct.  
+/// So Never move this struct or modify the inner field.
+// struct RecordNaturalSortData<'a> {
+//     /// never modify after initialized.
+//     inner: Box<Record>,
+//     sort_data: Vec<NaturalSortElem<'a>>,
+// }
+
+// impl<'a> RecordNaturalSortData<'a> {
+//     unsafe fn new(inner: Record) -> Result<Self, Error> {
+//         let mut s = Self {
+//             inner:inner.into(),
+//             sort_data: vec![],
+//         };
+
+//         // let p = &s.inner as *const _;
+
+//         s.sort_data = NaturalSortElemIter::new(std::str::from_utf8({
+//             let p: *const [u8] = s.inner.qname();
+
+//             unsafe { &*p }
+//         })?)
+//         .collect();
+
+//         Ok(s)
+//     }
+// }
+
+struct OptionArrIter<'a, T, const N: usize> {
+    inner: &'a [Option<T>; N],
+    idx: usize,
+}
+
+impl<'a, T, const N: usize> OptionArrIter<'a, T, N> {
+    fn new(inner: &'a [Option<T>; N]) -> Self {
+        Self { inner, idx: 0 }
+    }
+}
+
+impl<'a, T, const N: usize> Iterator for OptionArrIter<'a, T, N> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx < N {
+            let r = match &self.inner[self.idx] {
+                Some(v) => Some(v),
+                None => None,
+            };
+            self.idx += 1;
+            r
+        } else {
+            None
+        }
+    }
+}
+
+// struct NaturalSortKey([Option<NaturalSortElem>; 256], usize);
+struct NaturalSortKey(Vec<NaturalSortElem>, usize);
+
+impl NaturalSortKey {
+    fn from_record(record: &Record) -> Result<Self, Error> {
+        let v = NaturalSortElemIter::new(std::str::from_utf8(record.qname())?).collect::<Vec<_>>();
+        // let v = {
+        //     let mut v = [const { None }; 256];
+        //     let iter = NaturalSortElemIter::new(std::str::from_utf8(record.qname())?);
+        //     iter.enumerate().for_each(|(i, e)| {
+        //         if i < 256 {
+        //             v[i] = Some(e);
+        //         } else {
+        //             panic!("get parsed elems more than 256.")
+        //         }
+        //     });
+
+        //     v
+        // };
+
+        Ok(Self(v, get_read_num(record)))
+    }
+}
+
+impl PartialOrd for NaturalSortKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for NaturalSortKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match _natural_sort_cmp(self.0.iter(), other.0.iter()) {
+            Ordering::Equal => {}
+            oth => return oth,
+        }
+
+        self.1.cmp(&other.1)
+    }
+}
+
+impl PartialEq for NaturalSortKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+
+impl Eq for NaturalSortKey {}
+
+fn get_read_num(record: &Record) -> usize {
+    if record.is_first_in_template() {
+        1
+    } else if record.is_last_in_template() {
+        2
+    } else {
+        3
+        // panic!("not first and not last: {}", String::from_utf8_lossy(record.qname()))
+    }
+}
+
+struct NaturalSortElemExtractor<'a> {
+    hay: &'a [u8],
+    idxs:(usize, usize),
+}
+
+impl<'a> Iterator for NaturalSortElemExtractor<'a> {
+    type Item=NaturalSortElem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idxs.1 >= self.hay.len() {
+            return None
+        }
+
+        let hay = &self.hay[self.idxs.1..];
+
+        if hay[0].is_ascii_digit() {
+            for b in &hay[1..] {
+                b.
+            }
+        } else if hay[0].is_ascii_alphabetic() {
+
+        } else {
+            // panic!("Expected :{}", hay)
+        }
+
+    }
+}
+
 
 pub struct RecordSorter {
     chunk_size: usize,              // How many records to process per chunk.
@@ -114,16 +307,44 @@ impl RecordSorter {
     //     Ok(())
     // }
 
-    pub fn sort(&mut self) {
+    pub fn sort(&mut self) -> Result<(), Error> {
         match &self.rayon_tp {
             Some(tp) => tp.scope(|_s| {
-                self.record_vec
-                    .par_sort_by(|a, b| self.sort_by.compare(a, b));
-            }),
+                match self.sort_by {
+                    SortBy::QueryNameNatural => {
+                        eprintln!("making sort_data");
+
+                        let mut sort_data = self
+                            .record_vec
+                            .par_drain(..)
+                            // .enumerate()
+                            .map(|e| Ok((NaturalSortKey::from_record(&e)?, e)))
+                            .collect::<Result<Vec<_>, Error>>()?;
+
+                        eprintln!("made sort_data");
+
+                        sort_data.par_sort_by(|a, b| a.0.cmp(&b.0));
+                        eprintln!("sorted.");
+
+                        self.record_vec.extend(sort_data.into_iter().map(|v| v.1));
+                        // self.record_vec
+                        //     .par_sort_by(|a, b| self.sort_by.compare(a, b));
+
+                        // self.record_vec.par_sort_by_cached_key(|r| NaturalSortKey::from_record(r));
+                    }
+                    SortBy::QueryNameLexi | SortBy::Coordinate => {
+                        self.record_vec
+                            .par_sort_by(|a, b| self.sort_by.compare(&a, &b));
+                    }
+                }
+                Result::<_, Error>::Ok(())
+            })?,
             None => {
-                self.record_vec.sort_by(|a, b| self.sort_by.compare(a, b));
+                self.record_vec.sort_by(|a, b| self.sort_by.compare(&a, &b));
             }
         }
+
+        Ok(())
 
         // self.record_vec.sort_by(|a, b| self.sort_by.compare(a, b));
     }
@@ -469,12 +690,16 @@ impl<'a> NaturalSorter<'a> {
 }
 
 struct NaturalSortElemIter<'r, 'h> {
-    cap_matches: CaptureMatches<'r, 'h>,
+    cap_matches: Matches<'r, 'h>,
     next_idx: [Option<(usize, usize)>; 2],
     hay: &'h str,
 }
 
 impl<'r, 'h> NaturalSortElemIter<'r, 'h> {
+    // thread_local! {
+    //     static NUM_REP: LazyCell<Regex> = LazyCell::new(|| Regex::new(r"\d+").unwrap());
+    // }
+
     fn num_rep() -> &'static Regex {
         static NUM_REP: OnceLock<Regex> = OnceLock::new();
 
@@ -482,7 +707,7 @@ impl<'r, 'h> NaturalSortElemIter<'r, 'h> {
     }
 
     fn new(hay: &'h str) -> Self {
-        let cap_matches = Self::num_rep().captures_iter(&hay);
+        let cap_matches = Self::num_rep().find_iter(&hay);
 
         let mut s = Self {
             cap_matches,
@@ -490,8 +715,8 @@ impl<'r, 'h> NaturalSortElemIter<'r, 'h> {
             hay,
         };
 
-        if let Some(caps) = s.cap_matches.next() {
-            let g0 = caps.get(0).unwrap();
+        if let Some(g0) = s.cap_matches.next() {
+            // let g0 = c1aps.unwrap();
             let n_start = g0.start();
             let n_end = g0.end();
 
@@ -510,7 +735,7 @@ impl<'r, 'h> NaturalSortElemIter<'r, 'h> {
 }
 
 impl<'r, 'h> Iterator for NaturalSortElemIter<'r, 'h> {
-    type Item = NaturalSortElem<'h>;
+    type Item = NaturalSortElem;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut elem = None;
@@ -520,8 +745,8 @@ impl<'r, 'h> Iterator for NaturalSortElemIter<'r, 'h> {
 
                 if i == 1 {
                     // get next idxs from cap_matches
-                    if let Some(caps) = self.cap_matches.next() {
-                        let g0 = caps.get(0).unwrap();
+                    if let Some(g0) = self.cap_matches.next() {
+                        // let g0 = caps.get(0).unwrap();
                         let n_start = g0.start();
                         let n_end = g0.end();
 
@@ -547,7 +772,7 @@ impl<'r, 'h> Iterator for NaturalSortElemIter<'r, 'h> {
             if elem.as_bytes().get(0).map_or(false, |b| b.is_ascii_digit()) {
                 Some(NaturalSortElem::Num(elem.parse::<i64>().unwrap()))
             } else {
-                Some(NaturalSortElem::Text(elem))
+                Some(NaturalSortElem::Text(elem.to_owned()))
             }
         } else {
             None
@@ -555,10 +780,56 @@ impl<'r, 'h> Iterator for NaturalSortElemIter<'r, 'h> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum NaturalSortElem<'a> {
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum NaturalSortElem {
     Num(i64),
-    Text(&'a str),
+    // Text(&'a str),
+    Text(String),
+}
+
+impl PartialOrd for NaturalSortElem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NaturalSortElem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (NaturalSortElem::Num(a), NaturalSortElem::Num(b)) => a.cmp(b),
+            (NaturalSortElem::Text(a), NaturalSortElem::Text(b)) => a.cmp(b),
+            (NaturalSortElem::Num(_), NaturalSortElem::Text(_)) => Ordering::Less,
+            (NaturalSortElem::Text(_), NaturalSortElem::Num(_)) => Ordering::Greater,
+        }
+    }
+}
+
+fn _natural_sort_cmp<'a>(
+    mut a_iter: impl Iterator<Item = impl Borrow<NaturalSortElem>>,
+    mut b_iter: impl Iterator<Item = impl Borrow<NaturalSortElem>>,
+) -> std::cmp::Ordering {
+    loop {
+        match (a_iter.next(), b_iter.next()) {
+            (Some(a), Some(b)) => match a.borrow().cmp(b.borrow()) {
+                Ordering::Equal => {}
+                oth => return oth,
+            },
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (None, None) => {
+                break;
+            }
+        }
+    }
+
+    Ordering::Equal
+}
+
+fn natural_sort_cmp(lhs: &str, rhs: &str) -> std::cmp::Ordering {
+    let mut a_iter = NaturalSortElemIter::new(lhs);
+    let mut b_iter = NaturalSortElemIter::new(rhs);
+
+    _natural_sort_cmp(a_iter, b_iter)
 }
 
 #[cfg(test)]
@@ -587,7 +858,7 @@ mod tests {
         let threads = THREADS;
 
         // Create a RecordSorter with a small chunk size.
-        let mut record_sorter = RecordSorter::new(0, SortBy::QueryName, threads)?;
+        let mut record_sorter = RecordSorter::new(0, SortBy::QueryNameNatural, threads)?;
 
         // Read the BAM file and add records to the sorter.
         let mut reader = Reader::from_path(TEST_BAM).expect("Failed to open test BAM");
@@ -611,7 +882,7 @@ mod tests {
         }
 
         // Finalize so that any remaining in-memory records are flushed.
-        record_sorter.sort();
+        record_sorter.sort()?;
         record_sorter.finalize().expect("Finalize failed");
 
         // Create a SortedRecordIterator from the sorter.
@@ -620,7 +891,7 @@ mod tests {
 
         // Iterate over sorted records and check sort order by query name.
         let mut count = 0;
-        let mut prev_name: Option<Vec<u8>> = None;
+        let mut prev_record: Option<Record> = None;
 
         let mut header = super::super::Header::from_template(reader.header());
         // The @HD line should be present, with either the SO tag or the GO tag (but not both) specified.
@@ -687,8 +958,14 @@ mod tests {
                                     format!("SO:{}", sorted_iter.sort_by.SO_str()).into_bytes(),
                                 );
 
-                                if matches!(sorted_iter.sort_by, SortBy::QueryName) {
-                                    new_hd_line.push("SS:queryname:natural".into())
+                                match sorted_iter.sort_by {
+                                    SortBy::QueryNameLexi => {
+                                        new_hd_line.push("SS:queryname:lexicographical".into())
+                                    }
+                                    SortBy::QueryNameNatural => {
+                                        new_hd_line.push("SS:queryname:natural".into())
+                                    }
+                                    _ => {}
                                 }
                             } else if value.starts_with(b"SS") | value.starts_with(b"GO") {
                                 eprintln!(
@@ -738,22 +1015,26 @@ mod tests {
 
         while let Some(result) = sorted_iter.next() {
             let mut record = result.expect("Error iterating sorted record");
-            let cur_name = record.qname().to_vec();
-            if let Some(prev) = prev_name {
+            // let cur_name = record.qname().to_vec();
+            if let Some(prev) = prev_record {
+                let cmp = sorted_iter.sort_by.compare(&prev, &record);
                 assert!(
-                    prev <= cur_name,
-                    "i:{}, Records are not sorted by query name: {} > {}",
+                    cmp != Ordering::Greater,
+                    "i:{}, Records are not sorted by query name: {} > {} {:?}",
                     count,
-                    String::from_utf8_lossy(&prev),
-                    String::from_utf8_lossy(&cur_name)
+                    String::from_utf8_lossy(prev.qname()),
+                    String::from_utf8_lossy(record.qname()),
+                    cmp,
                 );
             }
-            prev_name = Some(cur_name);
+            assert_ne!(def_record, record);
+
+            writer.write(&record)?;
+
+            prev_record = Some(record);
             count += 1;
 
-            assert_ne!(def_record, record);
             // record.set_header(header_view.clone());
-            writer.write(&record)?;
         }
         println!("Total sorted records (in memory): {}", count);
         assert!(count > 0, "No records found");
@@ -769,8 +1050,8 @@ mod tests {
         };
 
         // Create two RecordSorter instances to simulate separate sorted iterators.
-        let mut record_sorter1 = RecordSorter::new(500, SortBy::QueryName, THREADS)?;
-        let mut record_sorter2 = RecordSorter::new(500, SortBy::QueryName, THREADS)?;
+        let mut record_sorter1 = RecordSorter::new(500, SortBy::QueryNameLexi, THREADS)?;
+        let mut record_sorter2 = RecordSorter::new(500, SortBy::QueryNameLexi, THREADS)?;
 
         {
             let mut reader = Reader::from_path(TEST_BAM).expect("Failed to open test BAM");
@@ -838,9 +1119,9 @@ mod tests {
 
         assert_eq!(
             vec![
-                NaturalSortElem::Text("aaa"),
+                NaturalSortElem::Text("aaa".into()),
                 NaturalSortElem::Num(123),
-                NaturalSortElem::Text("aabc."),
+                NaturalSortElem::Text("aabc.".into()),
                 NaturalSortElem::Num(234)
             ],
             NaturalSortElemIter::new(hay).collect::<Vec<_>>()
@@ -849,14 +1130,14 @@ mod tests {
         let hay = "aaa";
 
         assert_eq!(
-            vec![NaturalSortElem::Text("aaa"),],
+            vec![NaturalSortElem::Text("aaa".into()),],
             NaturalSortElemIter::new(hay).collect::<Vec<_>>()
         );
 
         let hay = "1aaa";
 
         assert_eq!(
-            vec![NaturalSortElem::Num(1), NaturalSortElem::Text("aaa"),],
+            vec![NaturalSortElem::Num(1), NaturalSortElem::Text("aaa".into()),],
             NaturalSortElemIter::new(hay).collect::<Vec<_>>()
         );
 
@@ -866,5 +1147,73 @@ mod tests {
             vec![NaturalSortElem::Num(11),],
             NaturalSortElemIter::new(hay).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_natural_sort_cmp() {
+        let a = "aaa1.33";
+        let b = "aaa1.1234";
+
+        assert_eq!(natural_sort_cmp(a, b), Ordering::Less);
+
+        let a = "aaa1.3333";
+        let b = "aaa1.1234";
+
+        assert_eq!(natural_sort_cmp(a, b), Ordering::Greater);
+
+        let a = "baa1.33";
+        let b = "aaa1.1234";
+
+        assert_eq!(natural_sort_cmp(a, b), Ordering::Greater);
+
+        let a = "1baa1.33";
+        let b = "aaa1.1234";
+
+        assert_eq!(natural_sort_cmp(a, b), Ordering::Less);
+    }
+
+    #[test]
+    fn test_equal_strings() {
+        assert_eq!(natural_sort_cmp("a12b3", "a12b3"), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_prefix() {
+        // "a12b" is a prefix of "a12b3", so should come before.
+        assert_eq!(natural_sort_cmp("a12b", "a12b3"), Ordering::Less);
+        assert_eq!(natural_sort_cmp("a12b3", "a12b"), Ordering::Greater);
+    }
+
+    #[test]
+    fn test_different_tokens() {
+        // Compare where first token (text) is equal, then numeric
+        // "a7b" vs "a12b" should compare by the numeric token (7 < 12)
+        assert_eq!(natural_sort_cmp("a7b", "a12b"), Ordering::Less);
+    }
+
+    #[test]
+    fn test_complex() {
+        // A mixed example comparing different tokens
+        assert_eq!(
+            natural_sort_cmp("file2version10", "file2version2"),
+            Ordering::Greater
+        );
+        // Here, the common "file2version" is equal,
+        // and then numerical tokens 10 > 2, so ordering is Greater.
+    }
+
+    #[test]
+    fn test_natural_sort_key() {
+        let v = {
+            // let mut v = [None; 256];
+            let mut iter = NaturalSortElemIter::new("asd123.123123");
+            let r: [_; 256] = std::array::from_fn(|_| iter.next());
+
+            if iter.next().is_some() {
+                panic!("num elems exceeds 256.")
+            }
+
+            r
+        };
     }
 }
