@@ -322,6 +322,11 @@ pub struct RecordSorter {
 }
 
 impl RecordSorter {
+    // 3245545 -> 2618332kb: y = k+ ax
+    // 2245545 -> 1980016kb
+    // expected mem usage per record: 640bytes
+    // 1562500 -> 1G
+
     pub fn new(chunk_size: usize, sort_by: SortBy, threads: usize) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chunk_size,
@@ -345,6 +350,14 @@ impl RecordSorter {
                 None
             },
         })
+    }
+
+    fn get_expected_record_count_for_1g_mem(read_len: usize) -> usize {
+        const EXPECTED_N_RECORDS_PER_1G_MEM: usize = 1562500;
+        const READ_LEN_OF_CALCULATION: usize = 101;
+
+        (EXPECTED_N_RECORDS_PER_1G_MEM as f64 * (read_len as f64 / READ_LEN_OF_CALCULATION as f64))
+            .ceil() as usize
     }
 
     fn hts_tp(&self) -> Option<&crate::tpool::ThreadPool> {
@@ -1002,7 +1015,7 @@ mod tests {
         let threads = THREADS;
 
         // Create a RecordSorter with a small chunk size.
-        let mut record_sorter = RecordSorter::new(0, SortBy::QueryNameNatural, threads)?;
+        let mut record_sorter = RecordSorter::new(2000000, SortBy::QueryNameNatural, threads)?;
 
         // Read the BAM file and add records to the sorter.
         let mut reader = Reader::from_path(TEST_BAM).expect("Failed to open test BAM");
@@ -1024,6 +1037,12 @@ mod tests {
                     .expect("Failed to add record");
             }
         }
+
+        // 3245545 -> 2618332kb: y = k+ ax
+        // 2245545 -> 1980016kb
+
+        // println!("{}", record_sorter.record_vec.len());
+        // panic!("");
 
         // Finalize so that any remaining in-memory records are flushed.
         record_sorter.sort()?;
