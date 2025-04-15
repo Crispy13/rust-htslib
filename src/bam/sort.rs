@@ -7,7 +7,7 @@ use rayon::{
 use regex::{CaptureMatches, Matches, Regex, bytes};
 use tempfile::NamedTempFile;
 
-use super::{Read as _, record::Record};
+use super::{Header, Read as _, record::Record};
 use anyhow::{Error, anyhow};
 use std::{
     borrow::Borrow,
@@ -166,8 +166,8 @@ struct NaturalSortKey(Vec<NaturalSortElem>, usize);
 
 impl NaturalSortKey {
     fn from_record(record: &Record) -> Result<Self, Error> {
-        // let v = NaturalSortElemIter::new(std::str::from_utf8(record.qname())?).collect::<Vec<_>>();
-        let v = NaturalSortElemExtractor::new(record.qname()).collect();
+        let v = NaturalSortElemIter::new(std::str::from_utf8(record.qname())?).collect::<Vec<_>>();
+        // let v = NaturalSortElemExtractor::new(record.qname()).collect();
 
         // let v = {
         //     let mut v = [const { None }; 256];
@@ -289,6 +289,29 @@ impl<'a> Iterator for NaturalSortElemExtractor<'a> {
     }
 }
 
+/// ## Examples
+/// ### 1. Normal
+/// ```ignore
+/// let mut rs = RecordSorter::new(100000, SortBy::QueryNameNatural, 4);
+///
+/// for record in indexed_reader.records() {
+///     rs.add_record(record); // if inner vector is full, then sort and dump stored records into a temp file.
+/// }
+///
+/// rs.sort()?;
+///
+/// let iter = rs.into_iter()?.collect::<Vec<_>>();
+///
+/// ```
+/// ### 2. No chunking (All records in memory)
+/// ```ignore
+/// let mut rs = RecordSorter::new(0, SortBy::QueryNameNatural, 4); // note that chunk_size is 0.
+/// ...
+///
+/// // we did not use chunking. so all records are in memory(vector).
+/// let sorted_records = rs.into_record_vec();
+///
+/// ```
 pub struct RecordSorter {
     chunk_size: usize,              // How many records to process per chunk.
     temp_files: Vec<NamedTempFile>, // Temporary file paths for sorted chunks.
@@ -346,6 +369,14 @@ impl RecordSorter {
 
     //     Ok(())
     // }
+
+    pub fn into_record_vec(self) -> Vec<Record> {
+        self.record_vec
+    }
+
+    pub fn into_iter(self) -> Result<SortedRecordIterator, Error> {
+        SortedRecordIterator::new(self)
+    }
 
     pub fn sort(&mut self) -> Result<(), Error> {
         match &self.rayon_tp {
@@ -418,34 +449,34 @@ impl RecordSorter {
     }
 
     fn sort_and_dump(&mut self) -> Result<(), anyhow::Error> {
-        self.sort();
+        self.sort()?;
 
         self.dump()?;
 
         Ok(())
     }
 
-    fn finalize(&mut self) -> Result<(), anyhow::Error> {
-        match (self.record_vec.len() > 0, self.temp_files.len() > 0) {
-            (true, true) => {
-                self.sort_and_dump()?;
-            }
-            (true, false) => {
-                // do nothing
-                if self.chunk_size != 0 {
-                    assert!(self.record_vec.len() <= self.chunk_size);
-                }
-            }
-            (false, true) => {
-                // do nothing
-            }
-            (false, false) => {
-                // do nothing
-            }
-        }
+    // fn finalize(&mut self) -> Result<(), anyhow::Error> {
+    //     match (self.record_vec.len() > 0, self.temp_files.len() > 0) {
+    //         (true, true) => {
+    //             self.sort_and_dump()?;
+    //         }
+    //         (true, false) => {
+    //             // do nothing
+    //             if self.chunk_size != 0 {
+    //                 assert!(self.record_vec.len() <= self.chunk_size);
+    //             }
+    //         }
+    //         (false, true) => {
+    //             // do nothing
+    //         }
+    //         (false, false) => {
+    //             // do nothing
+    //         }
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     // pub fn sort_and_into_iter(mut self) -> Result<SortedRecordIterator, Error> {
     //     self.finalize()?;
@@ -866,10 +897,83 @@ fn _natural_sort_cmp<'a>(
 }
 
 fn natural_sort_cmp(lhs: &str, rhs: &str) -> std::cmp::Ordering {
-    let mut a_iter = NaturalSortElemIter::new(lhs);
-    let mut b_iter = NaturalSortElemIter::new(rhs);
+    let a_iter = NaturalSortElemIter::new(lhs);
+    let b_iter = NaturalSortElemIter::new(rhs);
 
     _natural_sort_cmp(a_iter, b_iter)
+}
+
+/// Modify sort-related tags in bam header.
+/// this modifies:
+/// 1. SO tag
+/// 2. SS tag (if sorted by query name)
+/// 3. GO tag (remove if exists)
+pub fn modify_sort_tag_in_header(header: &mut Header, sort_by: SortBy) {
+    // The @HD line should be present, with either the SO tag or the GO tag (but not both) specified.
+
+    if let Some(hr) = header.records_mut().first_mut() {
+        let rep = regex::bytes::Regex::new(r"^@HD((?:\t[^\t\n]+)*)(\n)?([\S\s]*)*").unwrap();
+
+        let mut new_hd_line = vec![b"@HD".to_vec()];
+        match rep.captures(&hr) {
+            Some(caps) => {
+                let mut found_so_tag = false;
+
+                macro_rules! modify_sort_tag {
+                    () => {
+                        new_hd_line.push(format!("SO:{}", sort_by.SO_str()).into_bytes());
+
+                        match sort_by {
+                            SortBy::QueryNameLexi => {
+                                new_hd_line.push("SS:queryname:lexicographical".into())
+                            }
+                            SortBy::QueryNameNatural => {
+                                new_hd_line.push("SS:queryname:natural".into())
+                            }
+                            _ => {}
+                        }
+                    };
+                }
+
+                if let Some(values) = caps.get(1) {
+                    for value in values.as_bytes().trim_ascii().split(|&b| b == b'\t') {
+                        if value.starts_with(b"SO") {
+                            found_so_tag = true;
+
+                            modify_sort_tag!();
+                        } else if value.starts_with(b"SS") | value.starts_with(b"GO") {
+                            eprintln!(
+                                "Dropping this tag from original bam: {}",
+                                String::from_utf8_lossy(value)
+                            );
+                            continue;
+                        } else {
+                            new_hd_line.push(value.to_vec())
+                        }
+                    }
+                }
+
+                if !found_so_tag {
+                    modify_sort_tag!();
+                }
+
+                let mut new_hd_line2 = new_hd_line.join(&b'\t');
+
+                if caps.get(2).is_some() {
+                    new_hd_line2.push(b'\n');
+                };
+
+                if let Some(values) = caps.get(3) {
+                    // eprintln!("Added rest header: {} bytes", values.as_bytes().len());
+
+                    new_hd_line2.extend(values.as_bytes());
+                }
+
+                let _ = std::mem::replace(hr, new_hd_line2);
+            }
+            None => panic!("Invalid header: {}", String::from_utf8_lossy(hr)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -923,11 +1027,10 @@ mod tests {
 
         // Finalize so that any remaining in-memory records are flushed.
         record_sorter.sort()?;
-        record_sorter.finalize().expect("Finalize failed");
+        // record_sorter.finalize().expect("Finalize failed");
 
         // Create a SortedRecordIterator from the sorter.
-        let mut sorted_iter =
-            SortedRecordIterator::new(record_sorter).expect("Failed to build SortedRecordIterator");
+        let mut sorted_iter = record_sorter.into_iter()?;
 
         // Iterate over sorted records and check sort order by query name.
         let mut count = 0;
@@ -936,107 +1039,7 @@ mod tests {
         let mut header = super::super::Header::from_template(reader.header());
         // The @HD line should be present, with either the SO tag or the GO tag (but not both) specified.
 
-        if let Some(hr) = header.records_mut().first_mut() {
-            // let rep = regex::bytes::Regex::new(r"@HD(\t[^\t\n]+)*(\n)?(.*)").unwrap();
-
-            // match rep.captures(&hr) {
-            //     Some(caps) => {
-            //         let values = caps.get(1).map(|e| e.as_bytes()).unwrap_or(b"");
-
-            //         // replace SO tag
-            //         let rep2 = regex::bytes::Regex::new(r"\tSO:([^\t\n]+)").unwrap();
-            //         let rep3 = regex::bytes::Regex::new(r"\tSS:([^\t\n]+)").unwrap();
-            //         let rep4 = regex::bytes::Regex::new(r"\tGO:([^\t\n]+)").unwrap();
-
-            //         if matches!(sorted_iter.sort_by, SortBy::QueryName) {
-            //             // let ss_exists = values.windows(2).position(|b| b == b"SS").is_some();
-            //             let ss_exists = rep3.captures(values).is_some();
-
-            //             if !ss_exists {
-            //                 let values2 = rep2.replace(
-            //                     values,
-            //                     format!(
-            //                         "\tSO:{}\tSS:{}:natural",
-            //                         sorted_iter.sort_by.SO_str(),
-            //                         sorted_iter.sort_by.SO_str()
-            //                     )
-            //                     .as_bytes(),
-            //                 );
-            //             } else {
-            //                 let values2 = rep2.replace(
-            //                     values,
-            //                     format!(
-            //                         "\tSO:{}",
-            //                         sorted_iter.sort_by.SO_str(),
-            //                     )
-            //                     .as_bytes(),
-            //                 );
-
-            //                 let values3 = rep3.replace(
-            //                     &*values2,
-            //                     format!(
-            //                         "\tSS:{}:natural",
-            //                         sorted_iter.sort_by.SO_str(),
-            //                     )
-            //                     .as_bytes(),
-            //                 );
-            //             }
-            //         }
-            //     }
-            //     None => panic!("Invalid header: {}", String::from_utf8_lossy(hr)),
-            // }
-            let rep = regex::bytes::Regex::new(r"^@HD((?:\t[^\t\n]+)*)(\n)?([\S\s]*)*").unwrap();
-            // eprintln!("header: {}", String::from_utf8_lossy(hr));
-
-            let mut new_hd_line = vec![b"@HD".to_vec()];
-            match rep.captures(&hr) {
-                Some(caps) => {
-                    if let Some(values) = caps.get(1) {
-                        for value in values.as_bytes().trim_ascii().split(|&b| b == b'\t') {
-                            if value.starts_with(b"SO") {
-                                new_hd_line.push(
-                                    format!("SO:{}", sorted_iter.sort_by.SO_str()).into_bytes(),
-                                );
-
-                                match sorted_iter.sort_by {
-                                    SortBy::QueryNameLexi => {
-                                        new_hd_line.push("SS:queryname:lexicographical".into())
-                                    }
-                                    SortBy::QueryNameNatural => {
-                                        new_hd_line.push("SS:queryname:natural".into())
-                                    }
-                                    _ => {}
-                                }
-                            } else if value.starts_with(b"SS") | value.starts_with(b"GO") {
-                                eprintln!(
-                                    "Dropping this tag from original bam: {}",
-                                    String::from_utf8_lossy(value)
-                                );
-                                continue;
-                            } else {
-                                new_hd_line.push(value.to_vec())
-                            }
-                        }
-                    }
-
-                    let mut new_hd_line2 = new_hd_line.join(&b'\t');
-
-                    if caps.get(2).is_some() {
-                        new_hd_line2.push(b'\n');
-                    };
-
-                    if let Some(values) = caps.get(3) {
-                        eprintln!("Added rest header: {} bytes", values.as_bytes().len());
-
-                        new_hd_line2.extend(values.as_bytes());
-                    }
-
-                    // eprintln!("Modified header:{}", String::from_utf8_lossy(&new_hd_line2));
-                    let _ = std::mem::replace(hr, new_hd_line2);
-                }
-                None => panic!("Invalid header: {}", String::from_utf8_lossy(hr)),
-            }
-        }
+        modify_sort_tag_in_header(&mut header, sorted_iter.sort_by);
         // let mut header = super::super::Header::from_template(reader.header());
 
         let header_view = Rc::new(super::super::HeaderView::from_header(&header));
@@ -1111,8 +1114,8 @@ mod tests {
             }
         }
 
-        record_sorter1.finalize().expect("Finalize sorter1 failed");
-        record_sorter2.finalize().expect("Finalize sorter2 failed");
+        // record_sorter1.finalize().expect("Finalize sorter1 failed");
+        // record_sorter2.finalize().expect("Finalize sorter2 failed");
 
         let sorted_iter1 =
             SortedRecordIterator::new(record_sorter1).expect("Failed to build sorted_iter1");

@@ -8,7 +8,7 @@ use std::convert::TryInto;
 use std::ffi;
 use std::fmt;
 use std::marker::PhantomData;
-use std::mem::{size_of, MaybeUninit};
+use std::mem::{MaybeUninit, size_of};
 use std::ops;
 use std::os::raw::c_char;
 use std::rc::Rc;
@@ -103,11 +103,7 @@ impl Default for Record {
 #[inline]
 fn extranul_from_qname(qname: &[u8]) -> usize {
     let qlen = qname.len() + 1;
-    if qlen % 4 != 0 {
-        4 - qlen % 4
-    } else {
-        0
-    }
+    if qlen % 4 != 0 { 4 - qlen % 4 } else { 0 }
 }
 
 impl Record {
@@ -1005,11 +1001,7 @@ impl Record {
             }
         };
 
-        if ret < 0 {
-            Err(Error::BamAux)
-        } else {
-            Ok(())
-        }
+        if ret < 0 { Err(Error::BamAux) } else { Ok(()) }
     }
 
     // Delete auxiliary tag.
@@ -1123,6 +1115,28 @@ impl Record {
         }
     }
 
+    /**
+    return the original read sequence iterator.
+
+    Reads mapped to the reverse strand are stored reverse complemented in
+    the BAM file.
+    This method returns such reads reverse complemented back
+    to their original orientation.
+
+    */
+    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator> {
+        if !self.is_reverse() {
+            BaseIterator::Raw(self.seq().into_decoded_base_iter())
+        } else {
+            BaseIterator::ReverseComplement(
+                self.seq()
+                    .into_decoded_base_iter()
+                    .rev()
+                    .map(complement_base),
+            )
+        }
+    }
+
     /// aligned portion of the read.
     ///
     /// This is a substring of the read sequence that excludes flanking
@@ -1138,7 +1152,7 @@ impl Record {
     /// may have been retained.
     pub fn query_alignment_sequence(&self) -> Vec<u8> {
         if self.seq_len() == 0 {
-            return vec![]
+            return vec![];
         }
 
         self.seq()
@@ -1148,7 +1162,7 @@ impl Record {
             .collect::<Vec<_>>()
     }
 
-    pub fn query_alignment_base_iter(&self) -> impl Iterator<Item = u8>  {
+    pub fn query_alignment_base_iter(&self) -> impl Iterator<Item = u8> {
         // if self.seq_len() == 0 {
         //     return std::iter::empty()
         // }
@@ -1157,7 +1171,7 @@ impl Record {
             .into_decoded_base_iter()
             .skip(self.query_alignment_start())
             .take(self.query_alignment_end() - self.query_alignment_start())
-            // .collect::<Vec<_>>()
+        // .collect::<Vec<_>>()
     }
 
     /// start index of the aligned query portion of the sequence (0-based,
@@ -1349,6 +1363,43 @@ impl genome::AbstractInterval for Record {
         }
 
         self.pos() as u64..end_pos
+    }
+}
+
+pub enum BaseIterator<T: DoubleEndedIterator> {
+    Raw(T),
+    ReverseComplement(std::iter::Map<std::iter::Rev<T>, fn(T::Item) -> T::Item>),
+}
+
+impl<T: DoubleEndedIterator> DoubleEndedIterator for BaseIterator<T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            BaseIterator::Raw(it) => it.next_back(),
+            BaseIterator::ReverseComplement(it) => it.next_back(),
+        }
+    }
+}
+
+impl<T: DoubleEndedIterator> Iterator for BaseIterator<T> {
+    type Item = T::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            BaseIterator::Raw(it) => it.next(),
+            BaseIterator::ReverseComplement(it) => it.next(),
+        }
+    }
+}
+
+#[inline]
+fn complement_base(b: u8) -> u8 {
+    match b {
+        b'A' => b'T',
+        b'T' => b'A',
+        b'C' => b'G',
+        b'G' => b'C',
+        b'N' => b'N',
+        oth => panic!("Invalid base:{}", oth as char),
     }
 }
 
