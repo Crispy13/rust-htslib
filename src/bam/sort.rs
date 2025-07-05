@@ -352,7 +352,7 @@ impl RecordSorter {
         })
     }
 
-    fn get_expected_record_count_for_1g_mem(read_len: usize) -> usize {
+    pub fn get_expected_record_count_for_1g_mem(read_len: usize) -> usize {
         const EXPECTED_N_RECORDS_PER_1G_MEM: usize = 1562500;
         const READ_LEN_OF_CALCULATION: usize = 101;
 
