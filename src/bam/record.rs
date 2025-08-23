@@ -650,6 +650,18 @@ impl Record {
         unsafe { Self::read_aux_field(aux).map(|(aux_field, _length)| aux_field) }
     }
 
+    /// This does the same as `aux` method but returns Option.
+    /// 
+    /// If the tag is not found, return Ok(None) instead of Err(Error::BamAuxTagNotFound).
+    /// If the tag is found, return Ok(Aux<'_>).
+    pub fn aux_option(&self, tag: &[u8]) -> Result<Option<Aux<'_>>> {
+        match self.aux(tag) {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::BamAuxTagNotFound) => Ok(None),
+            Err(err) => Err(err)
+        }
+    }
+
     unsafe fn read_aux_field<'a>(aux: *const u8) -> Result<(Aux<'a>, usize)> {
         const TAG_LEN: isize = 2;
         // Used for skipping type identifier
