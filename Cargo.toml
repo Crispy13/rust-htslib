@@ -24,7 +24,7 @@ bio-types = ">=0.9"
 byteorder = "1.5.0"
 custom_derive = "0.1"
 derive-new = "0.7"
-hts-sys = { workspace = true }
+hts-sys = { git = "https://github.com/Crispy13/hts-sys.git", branch = "hts-latest" }
 ieee754 = "0.2"
 lazy_static = "1.5.0"
 libc = "0.2"
