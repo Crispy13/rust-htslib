@@ -151,6 +151,14 @@ impl<'a, R: bam::Read> Pileups<'a, R> {
             htslib::bam_plp_set_maxcnt(self.itr, intdepth);
         }
     }
+
+    pub fn ignore_overlaps(&mut self) {
+        unsafe {
+            if htslib::bam_plp_init_overlaps(self.itr) != 0 {
+                panic!("htslib::bam_plp_init_overlaps function failed.")
+            }
+        }
+    }
 }
 
 impl<R: bam::Read> Iterator for Pileups<'_, R> {
@@ -195,6 +203,13 @@ mod tests {
         let mut p = bam.pileup();
         p.set_max_depth(0u32);
         p.set_max_depth(800u32);
+    }
+
+    #[test]
+    fn test_ignore_overlaps() {
+        let mut bam = bam::Reader::from_path("test/test.bam").unwrap();
+        let mut p = bam.pileup();
+        p.ignore_overlaps();
     }
 
     #[test]
