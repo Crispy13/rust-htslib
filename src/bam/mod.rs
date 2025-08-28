@@ -27,6 +27,7 @@ use std::str;
 
 use url::Url;
 
+use crate::bam::pileup::PileupOption;
 use crate::errors::{Error, Result};
 use crate::htslib;
 use crate::tpool::ThreadPool;
@@ -906,6 +907,17 @@ impl IndexedReader {
             .chain([(-1, 0, 0, index.number_unmapped())])
             .collect::<_>())
     }
+
+    pub fn pileup_with_option(&mut self, option: PileupOption) -> pileup::Pileups<'_, Self> {
+        let _self = self as *const Self;
+        let itr = unsafe {
+            htslib::bam_plp_init(
+                Some(IndexedReader::pileup_read),
+                _self as *mut ::std::os::raw::c_void,
+            )
+        };
+        pileup::Pileups::with_option(self, itr, option)
+    }
 }
 
 #[derive(Debug)]
@@ -1431,11 +1443,7 @@ impl HeaderView {
     pub fn tid(&self, name: &[u8]) -> Option<u32> {
         let c_str = ffi::CString::new(name).expect("Expected valid name.");
         let tid = unsafe { htslib::sam_hdr_name2tid(self.inner, c_str.as_ptr()) };
-        if tid < 0 {
-            None
-        } else {
-            Some(tid as u32)
-        }
+        if tid < 0 { None } else { Some(tid as u32) }
     }
 
     pub fn tid2name(&self, tid: u32) -> &[u8] {
@@ -2537,14 +2545,18 @@ CCCCCCCCCCCCCCCCCCC"[..],
         assert!(result);
         let mut expected = Vec::new();
         let mut written = Vec::new();
-        assert!(File::open(expectedfile)
-            .unwrap()
-            .read_to_end(&mut expected)
-            .is_ok());
-        assert!(File::open(samfile)
-            .unwrap()
-            .read_to_end(&mut written)
-            .is_ok());
+        assert!(
+            File::open(expectedfile)
+                .unwrap()
+                .read_to_end(&mut expected)
+                .is_ok()
+        );
+        assert!(
+            File::open(samfile)
+                .unwrap()
+                .read_to_end(&mut written)
+                .is_ok()
+        );
         assert_eq!(expected, written);
     }
 

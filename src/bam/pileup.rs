@@ -123,6 +123,23 @@ pub enum Indel {
     None,
 }
 
+#[derive(Copy, Clone)]
+pub struct PileupOption {
+    /// Maximum value= `i32::MAX`
+    pub max_depth: i32,
+    pub ignore_overlaps: bool,
+    //TODO: stepper? of pysam.
+}
+
+impl Default for PileupOption {
+    fn default() -> Self {
+        Self {
+            max_depth: 8000,
+            ignore_overlaps: true,
+        }
+    }
+}
+
 /// Iterator over pileups.
 #[derive(Debug)]
 pub struct Pileups<'a, R: bam::Read> {
@@ -134,6 +151,22 @@ pub struct Pileups<'a, R: bam::Read> {
 impl<'a, R: bam::Read> Pileups<'a, R> {
     pub fn new(reader: &'a mut R, itr: htslib::bam_plp_t) -> Self {
         Pileups { reader, itr }
+    }
+
+    pub fn with_option(reader: &'a mut R, itr: htslib::bam_plp_t, option: PileupOption) -> Self {
+        let mut s = Pileups { reader, itr };
+
+        let PileupOption {
+            max_depth,
+            ignore_overlaps,
+        } = option;
+        s.set_max_depth(max_depth as u32);
+
+        if ignore_overlaps {
+            s.ignore_overlaps();
+        }
+
+        s
     }
 
     /// Warning: because htslib internally uses signed integer for depth this method
