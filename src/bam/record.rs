@@ -1192,7 +1192,7 @@ impl Record {
     to their original orientation.
 
     */
-    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator> {
+    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator<Item=u8>> {
         if !self.is_reverse() {
             BaseIterator::Raw(self.seq().into_decoded_base_iter())
         } else {

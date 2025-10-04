@@ -1833,6 +1833,21 @@ CCCCCCCCCCCCCCCCCCC"[..],
     }
 
     #[test]
+    fn test_forward_base_iter() {
+        let (names, _, seqs, quals, cigars) = gold();
+
+        let mut rec = record::Record::new();
+        rec.set(names[0], Some(&cigars[0]), seqs[0], quals[0]);
+        // note: this segfaults if you push_aux() before set()
+        //       because set() obliterates aux
+        rec.push_aux(b"NM", Aux::I32(15)).unwrap();
+
+        let bases = rec.forward_base_iter().take(4).collect::<Vec<u8>>();
+
+        assert_eq!(bases, b"CCTA");
+    }
+
+    #[test]
     fn test_set_repeated() {
         let mut rec = Record::new();
         rec.set(
