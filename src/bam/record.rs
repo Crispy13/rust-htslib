@@ -183,6 +183,11 @@ impl Record {
         self.header = Some(header);
     }
 
+    /// Remove header. Do this if you want to send this record to another thread.
+    pub fn remove_header(&mut self) {
+        self.header.take();
+    }
+
     pub(super) fn data(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.inner().data, self.inner().l_data as usize) }
     }
