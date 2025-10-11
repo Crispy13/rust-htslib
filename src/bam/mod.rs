@@ -12,8 +12,8 @@ pub mod index;
 pub mod pileup;
 pub mod record;
 
-#[cfg(feature = "experimental")]
-pub mod sort;
+// #[cfg(feature = "experimental")]
+// pub mod sort;
 
 #[cfg(feature = "serde_feature")]
 pub mod record_serde;
@@ -27,6 +27,7 @@ use std::str;
 
 use url::Url;
 
+use crate::bam::pileup::PileupOption;
 use crate::errors::{Error, Result};
 use crate::htslib;
 use crate::tpool::ThreadPool;
@@ -906,6 +907,17 @@ impl IndexedReader {
             .chain([(-1, 0, 0, index.number_unmapped())])
             .collect::<_>())
     }
+
+    pub fn pileup_with_option(&mut self, option: PileupOption) -> pileup::Pileups<'_, Self> {
+        let _self = self as *const Self;
+        let itr = unsafe {
+            htslib::bam_plp_init(
+                Some(IndexedReader::pileup_read),
+                _self as *mut ::std::os::raw::c_void,
+            )
+        };
+        pileup::Pileups::with_option(self, itr, option)
+    }
 }
 
 #[derive(Debug)]
@@ -1431,11 +1443,7 @@ impl HeaderView {
     pub fn tid(&self, name: &[u8]) -> Option<u32> {
         let c_str = ffi::CString::new(name).expect("Expected valid name.");
         let tid = unsafe { htslib::sam_hdr_name2tid(self.inner, c_str.as_ptr()) };
-        if tid < 0 {
-            None
-        } else {
-            Some(tid as u32)
-        }
+        if tid < 0 { None } else { Some(tid as u32) }
     }
 
     pub fn tid2name(&self, tid: u32) -> &[u8] {
@@ -1825,6 +1833,21 @@ CCCCCCCCCCCCCCCCCCC"[..],
     }
 
     #[test]
+    fn test_forward_base_iter() {
+        let (names, _, seqs, quals, cigars) = gold();
+
+        let mut rec = record::Record::new();
+        rec.set(names[0], Some(&cigars[0]), seqs[0], quals[0]);
+        // note: this segfaults if you push_aux() before set()
+        //       because set() obliterates aux
+        rec.push_aux(b"NM", Aux::I32(15)).unwrap();
+
+        let bases = rec.forward_base_iter().take(4).collect::<Vec<u8>>();
+
+        assert_eq!(bases, b"CCTA");
+    }
+
+    #[test]
     fn test_set_repeated() {
         let mut rec = Record::new();
         rec.set(
@@ -1934,6 +1957,67 @@ CCCCCCCCCCCCCCCCCCC"[..],
         assert_eq!(rec.qname(), b"blah1");
         rec.set_qname(b"r0");
         assert_eq!(rec.qname(), b"r0");
+    }
+
+    #[test]
+    fn test_set_cigar() {
+        let (names, _, seqs, quals, cigars) = gold();
+
+        assert!(names[0] != names[1]);
+
+        for i in 0..names.len() {
+            let mut rec = record::Record::new();
+            rec.set(names[i], Some(&cigars[i]), seqs[i], quals[i]);
+            rec.push_aux(b"NM", Aux::I32(15)).unwrap();
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(*rec.cigar(), cigars[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+
+            // boring cigar
+            let new_cigar = CigarString(vec![Cigar::Match(rec.seq_len() as u32)]);
+            assert_ne!(*rec.cigar(), new_cigar);
+            rec.set_cigar(Some(&new_cigar));
+            assert_eq!(*rec.cigar(), new_cigar);
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+
+            // bizarre cigar
+            let new_cigar = (0..rec.seq_len())
+                .map(|i| {
+                    if i % 2 == 0 {
+                        Cigar::Match(1)
+                    } else {
+                        Cigar::Ins(1)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let new_cigar = CigarString(new_cigar);
+            assert_ne!(*rec.cigar(), new_cigar);
+            rec.set_cigar(Some(&new_cigar));
+            assert_eq!(*rec.cigar(), new_cigar);
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+
+            // empty cigar
+            let new_cigar = CigarString(Vec::new());
+            assert_ne!(*rec.cigar(), new_cigar);
+            rec.set_cigar(None);
+            assert_eq!(*rec.cigar(), new_cigar);
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+        }
     }
 
     #[test]
@@ -2476,14 +2560,18 @@ CCCCCCCCCCCCCCCCCCC"[..],
         assert!(result);
         let mut expected = Vec::new();
         let mut written = Vec::new();
-        assert!(File::open(expectedfile)
-            .unwrap()
-            .read_to_end(&mut expected)
-            .is_ok());
-        assert!(File::open(samfile)
-            .unwrap()
-            .read_to_end(&mut written)
-            .is_ok());
+        assert!(
+            File::open(expectedfile)
+                .unwrap()
+                .read_to_end(&mut expected)
+                .is_ok()
+        );
+        assert!(
+            File::open(samfile)
+                .unwrap()
+                .read_to_end(&mut written)
+                .is_ok()
+        );
         assert_eq!(expected, written);
     }
 

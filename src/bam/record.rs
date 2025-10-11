@@ -359,9 +359,9 @@ impl Record {
 
         let orig_aux_offset = self.qname_capacity()
             + 4 * self.cigar_len()
-            + (self.seq_len() + 1) / 2
+            + self.seq_len().div_ceil(2)
             + self.seq_len();
-        let new_aux_offset = q_len + extranul + cigar_width + (seq.len() + 1) / 2 + qual.len();
+        let new_aux_offset = q_len + extranul + cigar_width + seq.len().div_ceil(2) + qual.len();
         assert!(orig_aux_offset <= self.inner.l_data as usize);
         let aux_len = self.inner.l_data as usize - orig_aux_offset;
         self.inner_mut().l_data = (new_aux_offset + aux_len) as i32;
@@ -417,7 +417,7 @@ impl Record {
                     });
             }
             self.inner_mut().core.l_qseq = seq.len() as i32;
-            i += (seq.len() + 1) / 2;
+            i += seq.len().div_ceil(2);
         }
 
         // qual
@@ -472,6 +472,62 @@ impl Record {
         }
         self.inner_mut().core.l_qname = new_q_len as u16;
         self.inner_mut().core.l_extranul = extranul as u8;
+    }
+
+    /// Replace current cigar with a new one.
+    pub fn set_cigar(&mut self, new_cigar: Option<&CigarString>) {
+        self.cigar = None;
+
+        let qname_data_len = self.qname_capacity();
+        let old_cigar_data_len = self.cigar_len() * 4;
+
+        // Length of data after cigar
+        let other_data_len = self.inner_mut().l_data - (qname_data_len + old_cigar_data_len) as i32;
+
+        let new_cigar_len = match new_cigar {
+            Some(x) => x.len(),
+            None => 0,
+        };
+        let new_cigar_data_len = new_cigar_len * 4;
+
+        if new_cigar_data_len < old_cigar_data_len {
+            self.inner_mut().l_data -= (old_cigar_data_len - new_cigar_data_len) as i32;
+        } else if new_cigar_data_len > old_cigar_data_len {
+            self.inner_mut().l_data += (new_cigar_data_len - old_cigar_data_len) as i32;
+
+            // Reallocate if necessary
+            if (self.inner().m_data as i32) < self.inner().l_data {
+                // Verbosity due to lexical borrowing
+                let l_data = self.inner().l_data;
+                self.realloc_var_data(l_data as usize);
+            }
+        }
+
+        if new_cigar_data_len != old_cigar_data_len {
+            // Move other data to new location
+            unsafe {
+                ::libc::memmove(
+                    self.inner.data.add(qname_data_len + new_cigar_data_len) as *mut ::libc::c_void,
+                    self.inner.data.add(qname_data_len + old_cigar_data_len) as *mut ::libc::c_void,
+                    other_data_len as usize,
+                );
+            }
+        }
+
+        // Copy cigar data
+        if let Some(cigar_string) = new_cigar {
+            let cigar_data = unsafe {
+                #[allow(clippy::cast_ptr_alignment)]
+                slice::from_raw_parts_mut(
+                    self.inner.data.add(qname_data_len) as *mut u32,
+                    cigar_string.len(),
+                )
+            };
+            for (i, c) in cigar_string.iter().enumerate() {
+                cigar_data[i] = c.encode();
+            }
+        }
+        self.inner_mut().core.n_cigar = new_cigar_len as u32;
     }
 
     fn realloc_var_data(&mut self, new_len: usize) {
@@ -565,7 +621,7 @@ impl Record {
 
     fn seq_data(&self) -> &[u8] {
         let offset = self.qname_capacity() + self.cigar_len() * 4;
-        &self.data()[offset..][..(self.seq_len() + 1) / 2]
+        &self.data()[offset..][..self.seq_len().div_ceil(2)]
     }
 
     /// Get read sequence. Complexity: O(1).
@@ -580,7 +636,7 @@ impl Record {
     /// This does not entail any offsets, hence the qualities can be used directly without
     /// e.g. subtracting 33. Complexity: O(1).
     pub fn qual(&self) -> &[u8] {
-        &self.data()[self.qname_capacity() + self.cigar_len() * 4 + (self.seq_len() + 1) / 2..]
+        &self.data()[self.qname_capacity() + self.cigar_len() * 4 + self.seq_len().div_ceil(2)..]
             [..self.seq_len()]
     }
 
@@ -597,6 +653,18 @@ impl Record {
             )
         };
         unsafe { Self::read_aux_field(aux).map(|(aux_field, _length)| aux_field) }
+    }
+
+    /// This does the same as `aux` method but returns Option.
+    /// 
+    /// If the tag is not found, return Ok(None) instead of Err(Error::BamAuxTagNotFound).
+    /// If the tag is found, return Ok(Aux<'_>).
+    pub fn aux_option(&self, tag: &[u8]) -> Result<Option<Aux<'_>>> {
+        match self.aux(tag) {
+            Ok(v) => Ok(Some(v)),
+            Err(Error::BamAuxTagNotFound) => Ok(None),
+            Err(err) => Err(err)
+        }
     }
 
     unsafe fn read_aux_field<'a>(aux: *const u8) -> Result<(Aux<'a>, usize)> {
@@ -788,7 +856,7 @@ impl Record {
                 // CIGAR (uint32_t):
                 + self.cigar_len() * std::mem::size_of::<u32>()
                 // Read sequence (4-bit encoded):
-                + (self.seq_len() + 1) / 2
+                + self.seq_len().div_ceil(2)
                 // Base qualities (char):
                 + self.seq_len()..],
         }
@@ -1129,7 +1197,7 @@ impl Record {
     to their original orientation.
 
     */
-    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator> {
+    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator<Item=u8>> {
         if !self.is_reverse() {
             BaseIterator::Raw(self.seq().into_decoded_base_iter())
         } else {
