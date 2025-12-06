@@ -13,3 +13,6 @@ perf.data.old
 *.svg
 
 NA12878.*.bam
+built_test_vcf.tbx
+built_test.csi
+cmp.tsv
