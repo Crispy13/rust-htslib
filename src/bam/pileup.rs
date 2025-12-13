@@ -81,6 +81,14 @@ impl<'a> Alignment<'a> {
         }
     }
 
+    /// position of the read base at the pileup site, 0-based.
+    ///
+    /// If the current position is a deletion, returns the next
+    /// aligned base.
+    pub fn qpos_or_next(&self) -> usize {
+        self.inner.qpos as usize
+    }
+
     /// Insertion, deletion (with length) if indel starts at next base or None otherwise.
     pub fn indel(&self) -> Indel {
         match self.inner.indel {
