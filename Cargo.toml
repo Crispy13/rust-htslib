@@ -24,7 +24,7 @@ bio-types = ">=0.9"
 byteorder = "1.5.0"
 custom_derive = "0.1"
 derive-new = "0.7"
-hts-sys = { git = "https://github.com/Crispy13/hts-sys.git", branch = "hts-latest", version = "2.2.0", default-features = false, features = [
+hts-sys = { git = "https://github.com/Crispy13/hts-sys.git", tag = "htslib-v1.23", version = "2.2.0", default-features = false, features = [
     "bindgen",
 ] }
 ieee754 = "0.2"
