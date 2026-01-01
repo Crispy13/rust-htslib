@@ -589,7 +589,7 @@ impl Record {
         self.cigar.as_ref()
     }
 
-    /// Decode the cigar string and if cigar has not been cached yet.
+    /// Decode the cigar string and cache it inside the `Record`, if cigar has not been cached yet.
     pub fn cache_cigar_if_empty(&mut self) {
         if self.cigar.is_none() {
             self.cigar = Some(self.unpack_cigar())
