@@ -589,6 +589,13 @@ impl Record {
         self.cigar.as_ref()
     }
 
+    /// Decode the cigar string and if cigar has not been cached yet.
+    pub fn cache_cigar_if_empty(&mut self) {
+        if self.cigar.is_none() {
+            self.cigar = Some(self.unpack_cigar())
+        }
+    }
+
     /// Decode the cigar string and cache it inside the `Record`
     pub fn cache_cigar(&mut self) {
         self.cigar = Some(self.unpack_cigar())
@@ -660,14 +667,14 @@ impl Record {
     }
 
     /// This does the same as `aux` method but returns Option.
-    /// 
+    ///
     /// If the tag is not found, return Ok(None) instead of Err(Error::BamAuxTagNotFound).
     /// If the tag is found, return Ok(Aux<'_>).
     pub fn aux_option(&self, tag: &[u8]) -> Result<Option<Aux<'_>>> {
         match self.aux(tag) {
             Ok(v) => Ok(Some(v)),
             Err(Error::BamAuxTagNotFound) => Ok(None),
-            Err(err) => Err(err)
+            Err(err) => Err(err),
         }
     }
 
@@ -1228,11 +1235,7 @@ impl Record {
             }
         };
 
-        if ret < 0 {
-            Err(Error::BamAux)
-        } else {
-            Ok(())
-        }
+        if ret < 0 { Err(Error::BamAux) } else { Ok(()) }
     }
 
     // Delete auxiliary tag.
@@ -1355,7 +1358,7 @@ impl Record {
     to their original orientation.
 
     */
-    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator<Item=u8>> {
+    pub fn forward_base_iter(&self) -> BaseIterator<impl DoubleEndedIterator<Item = u8>> {
         if !self.is_reverse() {
             BaseIterator::Raw(self.seq().into_decoded_base_iter())
         } else {
@@ -1381,18 +1384,13 @@ impl Record {
     /// In addition, extra sequencing adapters, multiplex identifiers,
     /// and low-quality bases that were not considered for alignment
     /// may have been retained.
+    ///
+    /// This makes fresh cigar data if cigar is not cached. You may want to call `cache_cigar_if_empty()` in advance.
     pub fn query_alignment_sequence(&self) -> Vec<u8> {
-        if self.seq_len() == 0 {
-            return vec![];
-        }
-
-        self.seq()
-            .decoded_base_iter()
-            .skip(self.query_alignment_start())
-            .take(self.query_alignment_end() - self.query_alignment_start())
-            .collect::<Vec<_>>()
+        self.query_alignment_base_iter().collect()
     }
 
+    /// This makes fresh cigar data if cigar is not cached. You may want to call `cache_cigar_if_empty()` in advance.
     pub fn query_alignment_base_iter(&self) -> impl Iterator<Item = u8> {
         // if self.seq_len() == 0 {
         //     return std::iter::empty()
@@ -1410,6 +1408,8 @@ impl Record {
     ///
     /// This the index of the first base of the read sequence
     /// that is not soft-clipped.
+    ///
+    /// This makes fresh cigar data if cigar is not cached. You may want to call `cache_cigar_if_empty()` in advance.
     pub fn query_alignment_start(&self) -> usize {
         let cigar = match self.cigar {
             Some(ref c) => c,
@@ -1439,6 +1439,8 @@ impl Record {
 
     /// Returns the end index (0-based, exclusive) of the aligned query portion of the sequence.
     /// That is, the index just past the last base that is not soft-clipped.
+    ///
+    /// This makes fresh cigar data if cigar is not cached. You may want to call `cache_cigar_if_empty()` in advance.
     pub fn query_alignment_end(&self) -> usize {
         // Retrieve the CIGAR operations.
         let cigar = match self.cigar {
