@@ -2154,6 +2154,30 @@ impl Cigar {
             Cigar::Diff(_) => 'X',
         }
     }
+
+    /// If true, represents that this cigar operator "consumes" bases from the read bases.
+    pub fn consumes_read_bases(&self) -> bool {
+        match self {
+            Cigar::Match(_)
+            | Cigar::Ins(_)
+            | Cigar::SoftClip(_)
+            | Cigar::Equal(_)
+            | Cigar::Diff(_) => true,
+            _ => false,
+        }
+    }
+
+    /// If true, represents that this cigar operator "consumes" bases from the reference sequence.
+    pub fn consumes_reference_bases(&self) -> bool {
+        match self {
+            Cigar::Match(_)
+            | Cigar::Del(_)
+            | Cigar::RefSkip(_)
+            | Cigar::Equal(_)
+            | Cigar::Diff(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Cigar {
