@@ -1712,6 +1712,16 @@ pub enum Aux<'a> {
     ArrayFloat(AuxArray<'a, f32>),
 }
 
+impl<'a> Aux<'a> {
+    /// If Aux value is a string, get `&str` from it. Else, return `Err`.
+    pub fn try_get_str(&self) -> Result<&str, Error> {
+        match self {
+            Aux::String(s) => Ok(s),
+            oth => Err(Error::BamAuxTagNotStr(format!("{oth:?}"))),
+        }
+    }
+}
+
 unsafe impl Send for Aux<'_> {}
 unsafe impl Sync for Aux<'_> {}
 

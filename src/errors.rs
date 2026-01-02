@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::bam::record::Aux;
+
 /// Generic result type for functions in this crate with
 /// a global error class.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -95,6 +97,8 @@ pub enum Error {
     BamAuxTagAlreadyPresent,
     #[error("updating the aux field for this datatype is not supported")]
     BamAuxTagUpdatingNotSupported,
+    #[error("Aux type is not str: {0:?}")]
+    BamAuxTagNotStr(String),
 
     // Errors for base modification fields
     #[error("no base modification tag found for record")]
