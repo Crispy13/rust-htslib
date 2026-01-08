@@ -2076,7 +2076,7 @@ impl Seq<'_> {
     }
 
     /// Return decoded base iterator. Complexity: O(m) with m being the read length.
-    pub fn into_decoded_base_iter(self) -> impl DoubleEndedIterator<Item = u8> {
+    pub fn into_decoded_base_iter(self) -> std::iter::Map<ops::Range<usize>, impl FnMut(usize) -> u8>  {
         (0..self.len()).map(move |i| self[i])
     }
 
@@ -3480,5 +3480,20 @@ mod basemod_tests {
                 i += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod exp_feat_tests {
+    use super::*;
+
+    // This tests just whether take(1).rev() will compile.
+    #[test]
+    fn test_decoded_iter() {
+        let r= Record::default();
+
+        let _ = r.seq().into_decoded_base_iter().take(1).rev();
+
+        
     }
 }
