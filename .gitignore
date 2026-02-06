@@ -16,3 +16,6 @@ NA12878.*.bam
 built_test_vcf.tbx
 built_test.csi
 cmp.tsv
+hts-sys
+.github/instructions/default.instructions.md
+samtools

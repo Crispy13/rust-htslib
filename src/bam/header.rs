@@ -148,7 +148,7 @@ impl<'a> HeaderRecord<'a> {
         self
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend(self.rec_type.iter());
         for &(tag, ref value) in self.tags.iter() {

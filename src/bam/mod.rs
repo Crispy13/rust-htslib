@@ -11,9 +11,8 @@ pub mod header;
 pub mod index;
 pub mod pileup;
 pub mod record;
-
-// #[cfg(feature = "experimental")]
-// pub mod sort;
+#[cfg(feature = "experimental")]
+pub mod sort;
 
 #[cfg(feature = "serde_feature")]
 pub mod record_serde;
