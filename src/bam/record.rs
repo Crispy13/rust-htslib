@@ -11,9 +11,9 @@ use std::marker::PhantomData;
 use std::mem::{MaybeUninit, size_of};
 use std::ops;
 use std::os::raw::c_char;
-use std::rc::Rc;
 use std::slice;
 use std::str;
+use std::sync::Arc;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -53,7 +53,7 @@ pub struct Record {
     pub inner: htslib::bam1_t,
     own: bool,
     cigar: Option<CigarStringView>,
-    pub(crate) header: Option<Rc<HeaderView>>,
+    pub(crate) header: Option<Arc<HeaderView>>,
 }
 
 unsafe impl Send for Record {}
@@ -183,7 +183,7 @@ impl Record {
         }
     }
 
-    pub fn set_header(&mut self, header: Rc<HeaderView>) {
+    pub fn set_header(&mut self, header: Arc<HeaderView>) {
         self.header = Some(header);
     }
 
@@ -656,11 +656,13 @@ impl Record {
     /// Only the first two bytes of a given tag are used for the look-up of a field.
     /// See [`Aux`] for more details.
     pub fn aux(&self, tag: &[u8]) -> Result<Aux<'_>> {
-        let c_str = ffi::CString::new(tag).map_err(|_| Error::BamAuxStringError)?;
+        if tag.len() < 2 {
+            return Err(Error::BamAuxStringError);
+        }
         let aux = unsafe {
             htslib::bam_aux_get(
                 &self.inner as *const htslib::bam1_t,
-                c_str.as_ptr() as *mut c_char,
+                tag.as_ptr() as *const c_char,
             )
         };
         unsafe { Self::read_aux_field(aux).map(|(aux_field, _length)| aux_field) }
@@ -857,7 +859,7 @@ impl Record {
     ///
     /// When an error occurs, the `Err` variant will be returned
     /// and the iterator will not be able to advance anymore.
-    pub fn aux_iter(&self) -> AuxIter<'_> {
+    pub fn aux_iter(&'_ self) -> AuxIter<'_> {
         AuxIter {
             // In order to get to the aux data section of a `bam::Record`
             // we need to skip fields in front of it
@@ -881,7 +883,14 @@ impl Record {
         if self.aux(tag).is_ok() {
             return Err(Error::BamAuxTagAlreadyPresent);
         }
+        self.push_aux_unchecked(tag, value)
+    }
 
+    /// Add auxiliary data, without checking if the tag is present.
+    ///
+    /// The caller should ensure that the same tag is not pushed more than once.
+    /// This is provided as a performance optimization.
+    pub fn push_aux_unchecked(&mut self, tag: &[u8], value: Aux<'_>) -> Result<()> {
         let ctag = tag.as_ptr() as *mut c_char;
         let ret = unsafe {
             match value {
@@ -1240,11 +1249,13 @@ impl Record {
 
     // Delete auxiliary tag.
     pub fn remove_aux(&mut self, tag: &[u8]) -> Result<()> {
-        let c_str = ffi::CString::new(tag).map_err(|_| Error::BamAuxStringError)?;
+        if tag.len() < 2 {
+            return Err(Error::BamAuxStringError);
+        }
         let aux = unsafe {
             htslib::bam_aux_get(
                 &self.inner as *const htslib::bam1_t,
-                c_str.as_ptr() as *mut c_char,
+                tag.as_ptr() as *const c_char,
             )
         };
         unsafe {
@@ -1288,14 +1299,14 @@ impl Record {
     ///    }
     ///    assert_eq!(mod_count, 14);
     /// ```
-    pub fn basemods_iter(&self) -> Result<BaseModificationsIter<'_>> {
+    pub fn basemods_iter(&'_ self) -> Result<BaseModificationsIter<'_>> {
         BaseModificationsIter::new(self)
     }
 
     /// An iterator that returns all of the modifications for each position as a vector.
     /// This is useful for the case where multiple possible modifications can be annotated
     /// at a single position (for example a C could be 5-mC or 5-hmC)
-    pub fn basemods_position_iter(&self) -> Result<BaseModificationsPositionIter<'_>> {
+    pub fn basemods_position_iter(&'_ self) -> Result<BaseModificationsPositionIter<'_>> {
         BaseModificationsPositionIter::new(self)
     }
 
@@ -1869,7 +1880,7 @@ where
     }
 
     /// Returns an iterator over the array.
-    pub fn iter(&self) -> AuxArrayIter<'_, T> {
+    pub fn iter(&'_ self) -> AuxArrayIter<'_, T> {
         AuxArrayIter {
             index: 0,
             array: self,
