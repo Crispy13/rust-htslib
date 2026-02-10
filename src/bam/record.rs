@@ -2087,7 +2087,9 @@ impl Seq<'_> {
     }
 
     /// Return decoded base iterator. Complexity: O(m) with m being the read length.
-    pub fn into_decoded_base_iter(self) -> std::iter::Map<ops::Range<usize>, impl FnMut(usize) -> u8>  {
+    pub fn into_decoded_base_iter(
+        self,
+    ) -> std::iter::Map<ops::Range<usize>, impl FnMut(usize) -> u8> {
         (0..self.len()).map(move |i| self[i])
     }
 
@@ -2946,6 +2948,8 @@ impl Iterator for BaseModificationsIter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::thread;
+
     use super::*;
 
     #[test]
@@ -3204,6 +3208,38 @@ mod tests {
         let cigar = "1S20M1D2I3X1=2H";
         let parsed = CigarString::try_from(cigar).unwrap();
         assert_eq!(parsed.to_string(), cigar);
+    }
+
+    #[test]
+    fn test_send_record() {
+        let test_bam = concat!(env!("CARGO_MANIFEST_DIR"), "/test/test.bam");
+        let mut ir = crate::bam::IndexedReader::from_path(test_bam).unwrap();
+
+        let mut record = Record::default();
+
+        ir.fetch(".").unwrap();
+        crate::bam::Read::read(&mut ir, &mut record)
+            .unwrap()
+            .unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel::<Record>();
+
+        let contig_name1 = record.header.as_ref().unwrap().tid2name(0).to_owned();
+
+        tx.send(record).unwrap();
+        let contig_name2 = std::thread::spawn(move || {
+            let record = rx.recv().unwrap();
+            record.header.as_ref().unwrap().tid2name(0).to_owned()
+        })
+        .join()
+        .unwrap();
+
+        // eprintln!(
+        //     "{} {}",
+        //     String::from_utf8_lossy(&contig_name1),
+        //     String::from_utf8_lossy(&contig_name2)
+        // );
+        assert_eq!(contig_name1, contig_name2)
     }
 }
 
@@ -3501,10 +3537,8 @@ mod exp_feat_tests {
     // This tests just whether take(1).rev() will compile.
     #[test]
     fn test_decoded_iter() {
-        let r= Record::default();
+        let r = Record::default();
 
         let _ = r.seq().into_decoded_base_iter().take(1).rev();
-
-        
     }
 }
