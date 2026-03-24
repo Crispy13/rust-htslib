@@ -24,7 +24,7 @@ bio-types = ">=0.9"
 byteorder = "1.5.0"
 custom_derive = "0.1"
 derive-new = "0.7"
-hts-sys = { git = "https://github.com/Crispy13/hts-sys.git", tag = "htslib-v1.23", version = "2.2.0", default-features = false, features = [
+hts-sys = { git = "https://github.com/Crispy13/hts-sys.git", tag = "htslib-v1.23.1", version = "2.2.0", default-features = false, features = [
     "bindgen",
 ] }
 ieee754 = "0.2"
@@ -32,14 +32,14 @@ lazy_static = "1.5.0"
 libc = "0.2"
 linear-map = "1.2"
 newtype_derive = "0.1"
-regex = "1.11.1"
+regex = "1.12.3"
 serde = { version = "^1", optional = true, features = ["derive"] }
 serde_bytes = { version = "0.11", optional = true }
 thiserror = { version = "^2" }
 url = "2.5"
-tempfile = "3.1.0"
-anyhow = { version = "1.0.97", optional = true }
-rayon = { version = "1.10.0", optional = true }
+tempfile = "3.27.0"
+anyhow = { version = "1.0.102", optional = true }
+rayon = { version = "1.11.0", optional = true }
 
 
 [features]
@@ -59,8 +59,8 @@ experimental = ["anyhow", "rayon"]
 bincode = { version = "2.0.1", features = ["serde"] }
 pretty_assertions = "1.4"
 serde_json = "1.0"
-tempfile = "3.20.0"
-mimalloc = { version = "0.1.46", features = ["secure"] }
+tempfile = "3.27.0"
+mimalloc = { version = "0.1.48", features = ["secure"] }
 
 [profile.dev]
 incremental = true
