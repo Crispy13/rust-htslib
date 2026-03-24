@@ -103,8 +103,13 @@ impl Reader {
                 &mut len_out,               //len
             )
         };
-        let vec =
-            unsafe { Vec::from_raw_parts(ptr as *mut u8, len_out as usize, len_out as usize) };
+        if ptr.is_null() {
+            return Err(Error::FaidxBadSeqName);
+        }
+        let len = len_out as usize;
+        let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+        let vec = slice.to_vec();
+        unsafe { libc::free(ptr as *mut libc::c_void) };
         Ok(vec)
     }
 
