@@ -596,7 +596,7 @@ impl<'a, T: AsRef<[u8]>, X: Into<FetchCoordinate>, Y: Into<FetchCoordinate>> Fro
 pub struct IndexedReader {
     htsfile: *mut htslib::htsFile,
     header: Arc<HeaderView>,
-    idx: Arc<IndexView>,
+    idx: Option<IndexView>,
     itr: Option<*mut htslib::hts_itr_t>,
     tpool: Option<ThreadPool>,
 }
@@ -642,7 +642,7 @@ impl IndexedReader {
             Ok(IndexedReader {
                 htsfile,
                 header: Arc::new(HeaderView::new(header)),
-                idx: Arc::new(IndexView::new(idx)),
+                idx: Some(IndexView::new(idx)),
                 itr: None,
                 tpool: None,
             })
@@ -670,7 +670,7 @@ impl IndexedReader {
             Ok(IndexedReader {
                 htsfile,
                 header: Arc::new(HeaderView::new(header)),
-                idx: Arc::new(IndexView::new(idx)),
+                idx: Some(IndexView::new(idx)),
                 itr: None,
                 tpool: None,
             })
@@ -815,7 +815,7 @@ impl IndexedReader {
     }
 
     pub fn index(&self) -> &IndexView {
-        &self.idx
+        self.idx.as_ref().unwrap()
     }
 
     // Analogous to slow_idxstats in samtools, see
@@ -849,8 +849,11 @@ impl IndexedReader {
                 return Err(Error::InvalidTid { tid });
             }
 
+            // Map unmapped reads (tid == -1) to the last slot (nref) to avoid usize wrapping.
+            let count_idx = if tid == -1 { nref } else { tid as usize };
+
             if tid != last_tid {
-                if (last_tid >= -1) && (counts[tid as usize][0] + counts[tid as usize][1]) > 0 {
+                if (last_tid >= -1) && (counts[count_idx][0] + counts[count_idx][1]) > 0 {
                     return Err(Error::BamUnsorted);
                 }
                 last_tid = tid;
@@ -861,7 +864,7 @@ impl IndexedReader {
             } else {
                 0
             };
-            counts[(*b).core.tid as usize][idx] += 1;
+            counts[count_idx][idx] += 1;
         }
 
         if ret == -1 {
@@ -1043,9 +1046,13 @@ impl Read for IndexedReader {
 impl Drop for IndexedReader {
     fn drop(&mut self) {
         unsafe {
-            if self.itr.is_some() {
-                htslib::hts_itr_destroy(self.itr.unwrap());
+            if let Some(itr) = self.itr.take() {
+                htslib::hts_itr_destroy(itr);
             }
+
+            // A CRAM index contains a pointer to the CRAM file handle.
+            // Destroy the index before hts_close frees that handle.
+            drop(self.idx.take());
             htslib::hts_close(self.htsfile);
         }
     }
@@ -1446,7 +1453,12 @@ impl HeaderView {
     }
 
     pub fn tid2name(&self, tid: u32) -> &[u8] {
-        unsafe { ffi::CStr::from_ptr(htslib::sam_hdr_tid2name(self.inner, tid as i32)).to_bytes() }
+        let ptr = unsafe { htslib::sam_hdr_tid2name(self.inner, tid as i32) };
+        if ptr.is_null() {
+            b""
+        } else {
+            unsafe { ffi::CStr::from_ptr(ptr).to_bytes() }
+        }
     }
 
     pub fn target_count(&self) -> u32 {
@@ -1798,6 +1810,19 @@ CCCCCCCCCCCCCCCCCCC"[..],
     fn test_read_indexed() {
         let bam = IndexedReader::from_path("test/test.bam").expect("Expected valid index.");
         _test_read_indexed_common(bam);
+    }
+
+    #[test]
+    fn test_read_indexed_cram() {
+        let mut reader = IndexedReader::from_path("test/test_cram.cram").unwrap();
+        reader.set_reference("test/test_cram.fa").unwrap();
+        reader.fetch(("chr1", 0, 120)).unwrap();
+
+        let mut record = Record::new();
+        reader.read(&mut record).unwrap().unwrap();
+        assert_eq!(record.qname(), b"chr1.1");
+
+        drop(reader);
     }
 
     #[test]
@@ -3193,6 +3218,27 @@ CCCCCCCCCCCCCCCCCCC"[..],
         ];
         let actual = reader.index_stats().unwrap();
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_slow_idxstats_cram_unmapped() {
+        let mut reader = IndexedReader::from_path("test/test_cram_unmapped.cram").unwrap();
+        reader.set_reference("test/test_cram.fa").unwrap();
+        let expected = vec![
+            (0, 120, 2, 0),
+            (1, 120, 2, 0),
+            (2, 120, 2, 0),
+            (-1, 0, 0, 2),
+        ];
+        let actual = reader.index_stats().unwrap();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_nonexistent_tidname() {
+        let header = Header::new();
+        let header_view = HeaderView::from_header(&header);
+        assert_eq!(b"", header_view.tid2name(0));
     }
 
     // #[test]
