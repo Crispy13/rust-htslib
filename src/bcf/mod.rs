@@ -105,8 +105,8 @@
 
 use std::ffi;
 use std::path::Path;
-use std::rc::Rc;
 use std::str;
+use std::sync::Arc;
 
 use url::Url;
 
@@ -159,10 +159,11 @@ pub trait Read: Sized {
 #[derive(Debug)]
 pub struct Reader {
     inner: *mut htslib::htsFile,
-    header: Rc<HeaderView>,
+    header: Arc<HeaderView>,
 }
 
 unsafe impl Send for Reader {}
+
 /// # Safety
 ///
 /// Implementation for `Reader::set_threads()` and `Writer::set_threads`.
@@ -202,7 +203,7 @@ impl Reader {
         let header = unsafe { htslib::bcf_hdr_read(htsfile) };
         Ok(Reader {
             inner: htsfile,
-            header: Rc::new(HeaderView::new(header)),
+            header: Arc::new(unsafe { HeaderView::from_ptr(header) }),
         })
     }
 }
@@ -215,7 +216,7 @@ impl Read for Reader {
                     // Always unpack record.
                     htslib::bcf_unpack(record.inner_mut(), htslib::BCF_UN_ALL as i32);
                 }
-                record.set_header(Rc::clone(&self.header));
+                record.set_header(Arc::clone(&self.header));
                 Some(Ok(()))
             }
             -1 => None,
@@ -224,7 +225,7 @@ impl Read for Reader {
     }
 
     fn records(&mut self) -> Records<'_, Self> {
-        Records { reader: self }
+        Records::new(self)
     }
 
     fn set_threads(&mut self, n_threads: usize) -> Result<()> {
@@ -237,7 +238,7 @@ impl Read for Reader {
 
     /// Return empty record.  Can be reused multiple times.
     fn empty_record(&self) -> Record {
-        self.header.empty_record()
+        Record::new(self.header.clone())
     }
 }
 
@@ -255,7 +256,7 @@ pub struct IndexedReader {
     /// The synced VCF/BCF reader to use internally.
     inner: *mut htslib::bcf_srs_t,
     /// The header.
-    header: Rc<HeaderView>,
+    header: Arc<HeaderView>,
 
     /// The position of the previous fetch, if any.
     current_region: Option<(u32, u64, Option<u64>)>,
@@ -298,9 +299,11 @@ impl IndexedReader {
         } // 0: BCF_SR_REQUIRE_IDX
           // Attach a file with the path from the arguments.
         if unsafe { htslib::bcf_sr_add_reader(ser_reader, path.as_ptr()) } >= 0 {
-            let header = Rc::new(HeaderView::new(unsafe {
-                htslib::bcf_hdr_dup((*(*ser_reader).readers.offset(0)).header)
-            }));
+            let header = Arc::new(unsafe {
+                HeaderView::from_ptr(htslib::bcf_hdr_dup(
+                    (*(*ser_reader).readers.offset(0)).header,
+                ))
+            });
             Ok(IndexedReader {
                 inner: ser_reader,
                 header,
@@ -318,7 +321,7 @@ impl IndexedReader {
     /// # Arguments
     ///
     /// * `rid` - numeric ID of the reference to jump to; use `HeaderView::name2rid` for resolving
-    ///           contig name to ID.
+    ///   contig name to ID.
     /// * `start` - `0`-based **inclusive** start coordinate of region on reference.
     /// * `end` - Optional `0`-based **inclusive** end coordinate of region on reference. If `None`
     ///   is given, records are fetched from `start` until the end of the contig.
@@ -368,14 +371,11 @@ impl Read for IndexedReader {
                     htslib::bcf_unpack(record.inner_mut(), htslib::BCF_UN_ALL as i32);
                 }
 
-                record.set_header(Rc::clone(&self.header));
+                record.set_header(Arc::clone(&self.header));
 
                 match self.current_region {
                     Some((rid, _start, end)) => {
-                        let endpos = match end {
-                            Some(e) => e,
-                            None => u64::MAX,
-                        };
+                        let endpos = end.unwrap_or(u64::MAX);
                         if Some(rid) == record.rid() && record.pos() as u64 <= endpos {
                             Some(Ok(()))
                         } else {
@@ -389,7 +389,7 @@ impl Read for IndexedReader {
     }
 
     fn records(&mut self) -> Records<'_, Self> {
-        Records { reader: self }
+        Records::new(self)
     }
 
     fn set_threads(&mut self, n_threads: usize) -> Result<()> {
@@ -408,7 +408,7 @@ impl Read for IndexedReader {
     }
 
     fn empty_record(&self) -> Record {
-        Record::new(Rc::clone(&self.header))
+        Record::new(self.header.clone())
     }
 }
 
@@ -451,8 +451,8 @@ pub mod synced {
         /// Internal handle for the synced reader.
         inner: *mut crate::htslib::bcf_srs_t,
 
-        /// RC's of `HeaderView`s of the readers.
-        headers: Vec<Rc<HeaderView>>,
+        /// Arcs of `HeaderView`s of the readers.
+        headers: Vec<Arc<HeaderView>>,
 
         /// The position of the previous fetch, if any.
         current_region: Option<(u32, u64, u64)>,
@@ -503,9 +503,11 @@ pub mod synced {
                     }
 
                     let i = (self.reader_count() - 1) as isize;
-                    let header = Rc::new(HeaderView::new(unsafe {
-                        crate::htslib::bcf_hdr_dup((*(*self.inner).readers.offset(i)).header)
-                    }));
+                    let header = Arc::new(unsafe {
+                        HeaderView::from_ptr(crate::htslib::bcf_hdr_dup(
+                            (*(*self.inner).readers.offset(i)).header,
+                        ))
+                    });
                     self.headers.push(header);
                     Ok(())
                 }
@@ -605,7 +607,7 @@ pub mod synced {
         /// # Arguments
         ///
         /// * `rid` - numeric ID of the reference to jump to; use `HeaderView::name2rid` for resolving
-        ///           contig name to ID.
+        ///   contig name to ID.
         /// * `start` - `0`-based start coordinate of region on reference.
         /// * `end` - `0`-based end coordinate of region on reference.
         pub fn fetch(&mut self, rid: u32, start: u64, end: u64) -> Result<()> {
@@ -642,7 +644,7 @@ pub enum Format {
 #[derive(Debug)]
 pub struct Writer {
     inner: *mut htslib::htsFile,
-    header: Rc<HeaderView>,
+    header: Arc<HeaderView>,
     subset: Option<SampleSubset>,
 }
 
@@ -710,9 +712,7 @@ impl Writer {
         unsafe { htslib::bcf_hdr_write(htsfile, header.inner) };
         Ok(Writer {
             inner: htsfile,
-            header: Rc::new(HeaderView::new(unsafe {
-                htslib::bcf_hdr_dup(header.inner)
-            })),
+            header: Arc::new(unsafe { HeaderView::from_ptr(htslib::bcf_hdr_dup(header.inner)) }),
             subset: header.subset.clone(),
         })
     }
@@ -726,7 +726,7 @@ impl Writer {
     ///
     /// This record can then be reused multiple times.
     pub fn empty_record(&self) -> Record {
-        record::Record::new(Rc::clone(&self.header))
+        Record::new(self.header.clone())
     }
 
     /// Translate record to header of this writer.
@@ -738,7 +738,7 @@ impl Writer {
         unsafe {
             htslib::bcf_translate(self.header.inner, record.header().inner, record.inner);
         }
-        record.set_header(Rc::clone(&self.header));
+        record.set_header(Arc::clone(&self.header));
     }
 
     /// Subset samples of record to match header of this writer.
@@ -796,6 +796,12 @@ pub struct Records<'a, R: Read> {
     reader: &'a mut R,
 }
 
+impl<'a, R: Read> Records<'a, R> {
+    pub fn new(reader: &'a mut R) -> Self {
+        Self { reader }
+    }
+}
+
 impl<R: Read> Iterator for Records<'_, R> {
     type Item = Result<record::Record>;
 
@@ -835,6 +841,8 @@ fn bcf_open(target: &[u8], mode: &[u8]) -> Result<*mut htslib::htsFile> {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::NamedTempFile;
+
     use super::record::Buffer;
     use super::*;
     use crate::bcf::header::Id;
@@ -1088,6 +1096,129 @@ mod tests {
             let genotypes = rec.genotypes().expect("Error reading genotypes");
             assert_eq!(&format!("{}", genotypes.get(0)), exp_gt);
         }
+    }
+
+    #[test]
+    fn test_genotypes_read_mixed_ploidy() {
+        let mut vcf = Reader::from_path("test/test_non_diploid.vcf").expect("Error opening file.");
+
+        // Expected genotypes for comparison
+        let expected = [vec!["0", "1"], vec!["0/1", "1/1"], vec!["1|0", "1/1|0"]];
+
+        for (rec, exp_gts) in vcf.records().zip(expected.iter()) {
+            let rec = rec.expect("Error reading record.");
+
+            // Get the genotypes from the record
+            let genotypes = rec.genotypes().expect("Error reading genotypes");
+
+            // Compare each genotype with the expected value
+            for (sample, exp_gt) in exp_gts.iter().enumerate() {
+                assert_eq!(&format!("{}", genotypes.get(sample)), exp_gt);
+            }
+        }
+    }
+
+    #[test]
+    fn test_genotypes_write_and_read_mixed_ploidy() {
+        let mut vcf = Reader::from_path("test/test_non_diploid.vcf").expect("Error opening file.");
+
+        // Create a temporary file to write the modified VCF data
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        {
+            // Create a VCF writer with the same header as the input VCF
+            let mut writer = Writer::from_path(
+                path,
+                &Header::from_template(vcf.header()),
+                true,
+                Format::Vcf,
+            )
+            .unwrap();
+
+            // Modify record template by adding different genotypes and write the to the temp file.
+            let mut rec_tpl = vcf.records().next().unwrap().unwrap();
+            rec_tpl
+                .push_genotype_structured(
+                    &[
+                        vec![GenotypeAllele::Unphased(0)],
+                        vec![GenotypeAllele::Unphased(1)],
+                    ],
+                    3,
+                )
+                .unwrap();
+            writer.write(&rec_tpl).unwrap();
+            rec_tpl
+                .push_genotype_structured(
+                    &[
+                        vec![GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)],
+                        vec![GenotypeAllele::Unphased(1), GenotypeAllele::Unphased(1)],
+                    ],
+                    3,
+                )
+                .unwrap();
+            writer.write(&rec_tpl).unwrap();
+            rec_tpl
+                .push_genotype_structured(
+                    &[
+                        vec![GenotypeAllele::Unphased(1), GenotypeAllele::Phased(0)],
+                        vec![
+                            GenotypeAllele::Unphased(1),
+                            GenotypeAllele::Unphased(1),
+                            GenotypeAllele::Phased(0),
+                        ],
+                    ],
+                    3,
+                )
+                .unwrap();
+            writer.write(&rec_tpl).unwrap();
+        }
+
+        // Read back the temporary file with the modified VCF data
+        let mut reader = Reader::from_path(path).unwrap();
+
+        // Expected genotypes for validation
+        let expected = [vec!["0", "1"], vec!["0/1", "1/1"], vec!["1|0", "1/1|0"]];
+
+        // Iterate over the records in the temporary file and validate the genotypes
+        for (rec, exp_gts) in reader.records().zip(expected.iter()) {
+            let rec = rec.expect("Error reading record");
+            let genotypes = rec.genotypes().expect("Error reading genotypes");
+
+            // Compare each genotype with the expected value
+            for (sample, exp_gt) in exp_gts.iter().enumerate() {
+                assert_eq!(&format!("{}", genotypes.get(sample)), exp_gt);
+            }
+        }
+    }
+
+    #[test]
+    fn test_genotypes_wrong_max_ploidy() {
+        let mut vcf = Reader::from_path("test/test_non_diploid.vcf").expect("Error opening file.");
+
+        // Modify record template by adding different genotypes and write the to the temp file.
+        let mut rec_tpl = vcf.records().next().unwrap().unwrap();
+        let err = rec_tpl
+            .push_genotype_structured(
+                &[
+                    vec![
+                        GenotypeAllele::Unphased(0),
+                        GenotypeAllele::Unphased(1),
+                        GenotypeAllele::Unphased(0),
+                    ],
+                    vec![
+                        GenotypeAllele::Unphased(1),
+                        GenotypeAllele::Unphased(0),
+                        GenotypeAllele::Unphased(1),
+                        GenotypeAllele::Unphased(0),
+                    ],
+                ],
+                3,
+            )
+            .expect_err(
+                "This should fail since there are more alleles specified (4 for second sample) than max_ploidy (3) suggests",
+            );
+        assert_eq!(err, crate::errors::Error::BcfSetValues);
     }
 
     #[test]

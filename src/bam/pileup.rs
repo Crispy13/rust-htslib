@@ -81,6 +81,14 @@ impl<'a> Alignment<'a> {
         }
     }
 
+    /// position of the read base at the pileup site, 0-based.
+    ///
+    /// If the current position is a deletion, returns the next
+    /// aligned base.
+    pub fn qpos_or_next(&self) -> usize {
+        self.inner.qpos as usize
+    }
+
     /// Insertion, deletion (with length) if indel starts at next base or None otherwise.
     pub fn indel(&self) -> Indel {
         match self.inner.indel {
@@ -123,6 +131,23 @@ pub enum Indel {
     None,
 }
 
+#[derive(Copy, Clone)]
+pub struct PileupOption {
+    /// Maximum value= `i32::MAX`
+    pub max_depth: i32,
+    pub ignore_overlaps: bool,
+    //TODO: stepper? of pysam.
+}
+
+impl Default for PileupOption {
+    fn default() -> Self {
+        Self {
+            max_depth: 8000,
+            ignore_overlaps: true,
+        }
+    }
+}
+
 /// Iterator over pileups.
 #[derive(Debug)]
 pub struct Pileups<'a, R: bam::Read> {
@@ -134,6 +159,22 @@ pub struct Pileups<'a, R: bam::Read> {
 impl<'a, R: bam::Read> Pileups<'a, R> {
     pub fn new(reader: &'a mut R, itr: htslib::bam_plp_t) -> Self {
         Pileups { reader, itr }
+    }
+
+    pub fn with_option(reader: &'a mut R, itr: htslib::bam_plp_t, option: PileupOption) -> Self {
+        let mut s = Pileups { reader, itr };
+
+        let PileupOption {
+            max_depth,
+            ignore_overlaps,
+        } = option;
+        s.set_max_depth(max_depth as u32);
+
+        if ignore_overlaps {
+            s.ignore_overlaps();
+        }
+
+        s
     }
 
     /// Warning: because htslib internally uses signed integer for depth this method
@@ -149,6 +190,14 @@ impl<'a, R: bam::Read> Pileups<'a, R> {
         let intdepth = depth as i32;
         unsafe {
             htslib::bam_plp_set_maxcnt(self.itr, intdepth);
+        }
+    }
+
+    pub fn ignore_overlaps(&mut self) {
+        unsafe {
+            if htslib::bam_plp_init_overlaps(self.itr) != 0 {
+                panic!("htslib::bam_plp_init_overlaps function failed.")
+            }
         }
     }
 }
@@ -195,6 +244,13 @@ mod tests {
         let mut p = bam.pileup();
         p.set_max_depth(0u32);
         p.set_max_depth(800u32);
+    }
+
+    #[test]
+    fn test_ignore_overlaps() {
+        let mut bam = bam::Reader::from_path("test/test.bam").unwrap();
+        let mut p = bam.pileup();
+        p.ignore_overlaps();
     }
 
     #[test]

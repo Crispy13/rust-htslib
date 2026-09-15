@@ -34,9 +34,9 @@
 
 use std::ffi;
 use std::os::raw::c_char;
-use std::rc::Rc;
 use std::slice;
 use std::str;
+use std::sync::Arc;
 
 use crate::htslib;
 
@@ -65,9 +65,12 @@ custom_derive! {
 /// A BCF header.
 #[derive(Debug)]
 pub struct Header {
-    pub inner: *mut htslib::bcf_hdr_t,
+    pub(crate) inner: *mut htslib::bcf_hdr_t,
     pub subset: Option<SampleSubset>,
 }
+
+unsafe impl Send for Header {}
+unsafe impl Sync for Header {}
 
 impl Default for Header {
     fn default() -> Self {
@@ -83,6 +86,15 @@ impl Header {
             inner: unsafe { htslib::bcf_hdr_init(c_str.as_ptr()) },
             subset: None,
         }
+    }
+
+    /// Get a pointer to the raw header.
+    ///
+    /// # Safety
+    /// The caller must ensure that the pointer is not used after this `Header`
+    /// is dropped
+    pub unsafe fn inner_ptr(&self) -> *mut htslib::bcf_hdr_t {
+        self.inner
     }
 
     /// Create a new `Header` using the given `HeaderView` as the template.
@@ -266,12 +278,28 @@ pub enum HeaderRecord {
 
 #[derive(Debug)]
 pub struct HeaderView {
-    pub inner: *mut htslib::bcf_hdr_t,
+    pub(crate) inner: *mut htslib::bcf_hdr_t,
 }
 
+unsafe impl Send for HeaderView {}
+unsafe impl Sync for HeaderView {}
+
 impl HeaderView {
-    pub fn new(inner: *mut htslib::bcf_hdr_t) -> Self {
+    /// Create a view from a raw pointer to a header.
+    ///
+    /// # Safety
+    /// The caller must ensure that the header is initialized.
+    pub unsafe fn from_ptr(inner: *mut htslib::bcf_hdr_t) -> Self {
         HeaderView { inner }
+    }
+
+    /// Get a pointer to the underlying raw header.
+    ///
+    /// # Safety
+    /// The caller must ensure that the pointer is not used after this
+    /// `HeaderView` is dropped
+    pub unsafe fn as_ptr(&self) -> *mut htslib::bcf_hdr_t {
+        self.inner
     }
 
     #[inline]
@@ -513,8 +541,8 @@ impl HeaderView {
     /// Create an empty record using this header view.
     ///
     /// The record can be reused multiple times.
-    pub fn empty_record(&self) -> crate::bcf::Record {
-        crate::bcf::Record::new(Rc::new(self.clone()))
+    pub fn empty_record(self: &Arc<Self>) -> crate::bcf::Record {
+        crate::bcf::Record::new(self.clone())
     }
 }
 
@@ -553,7 +581,9 @@ pub enum TagLength {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::bcf::Reader;
+    use crate::htslib;
 
     #[test]
     fn test_header_view_empty_record() {
@@ -569,5 +599,40 @@ mod tests {
         assert_eq!(record.rid(), Some(0)); // No chromosome/contig set
         assert_eq!(record.pos(), 0); // No position set
         assert_eq!(record.qual(), 0.0); // No quality score set
+    }
+
+    #[test]
+    fn test_header_add_sample_via_raw_pointer() {
+        let sample_name = b"test-sample";
+
+        let header = Header::new();
+        let sample = std::ffi::CString::new(sample_name).unwrap();
+
+        let view = unsafe {
+            let ptr = header.inner_ptr();
+            // to avoid double free, as we will wrap this later in a HeaderView
+            std::mem::forget(header);
+            htslib::bcf_hdr_add_sample(ptr, sample.as_ptr());
+            htslib::bcf_hdr_sync(ptr);
+            // When the HeaderView is dropped, the bcf_hdr is freed
+            HeaderView::from_ptr(ptr)
+        };
+
+        assert_eq!(view.samples(), vec![sample_name]);
+    }
+
+    #[test]
+    fn test_header_view_version_via_raw_pointer() {
+        let vcf = Reader::from_path("test/test_string.vcf").expect("Error opening file");
+        let hv = vcf.header.clone();
+
+        let version = unsafe {
+            // the header view will outlive this pointer
+            let ptr = hv.as_ptr();
+            let version_charptr = htslib::bcf_hdr_get_version(ptr);
+            std::ffi::CStr::from_ptr(version_charptr).to_str().unwrap()
+        };
+
+        assert_eq!(version, "VCFv4.1");
     }
 }

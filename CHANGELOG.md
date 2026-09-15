@@ -2,6 +2,67 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.0.2](https://github.com/rust-bio/rust-htslib/compare/v1.0.1...v1.0.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* add null check to tidname on HeaderView ([#515](https://github.com/rust-bio/rust-htslib/issues/515)) ([979b3d1](https://github.com/rust-bio/rust-htslib/commit/979b3d1462ae4dd6ad996d5492976af393ee0434))
+* drop cram index in hts_close to avoid UB ([#518](https://github.com/rust-bio/rust-htslib/issues/518)) ([d472d33](https://github.com/rust-bio/rust-htslib/commit/d472d33f927173c278ede81960f950c9d61cec46))
+
+## [1.0.1](https://github.com/rust-bio/rust-htslib/compare/v1.0.0...v1.0.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* map unmapped reads (tid=-1) to correct index in slow_idxstats ([#511](https://github.com/rust-bio/rust-htslib/issues/511)) ([ebd7d99](https://github.com/rust-bio/rust-htslib/commit/ebd7d994889120525345d928c19d9d4e06130f3d))
+
+## [1.0.0](https://github.com/rust-bio/rust-htslib/compare/v0.51.0...v1.0.0) (2026-01-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* make the inner header pointer accessible again, although only through unsafe ([#504](https://github.com/rust-bio/rust-htslib/issues/504))
+* Reason about Send/Sync-ness of types and change Rcs to Arcs ([#488](https://github.com/rust-bio/rust-htslib/issues/488))
+* Use Arc instead of Rc in bam::buffer, such that the buffer can be used in a multithreaded context ([#495](https://github.com/rust-bio/rust-htslib/issues/495))
+
+### Features
+
+* Reason about Send/Sync-ness of types and change Rcs to Arcs ([#488](https://github.com/rust-bio/rust-htslib/issues/488)) ([d743a34](https://github.com/rust-bio/rust-htslib/commit/d743a3477a774e0fbe258c346918c7717ad061d2))
+* Use Arc instead of Rc in bam::buffer, such that the buffer can be used in a multithreaded context ([#495](https://github.com/rust-bio/rust-htslib/issues/495)) ([229d5a2](https://github.com/rust-bio/rust-htslib/commit/229d5a265685fd25e59e807524a5df27d4057c83))
+
+
+### Bug Fixes
+
+* apply clippy suggestion to use unwrap_or instead of match ([#501](https://github.com/rust-bio/rust-htslib/issues/501)) ([161f759](https://github.com/rust-bio/rust-htslib/commit/161f7594c8433ea1229722fd4a6cb7add57aa1ef))
+* empty_header was making a deep copy of header ([#499](https://github.com/rust-bio/rust-htslib/issues/499)) ([60aad09](https://github.com/rust-bio/rust-htslib/commit/60aad095d9b5b4809de2797b9ab784566257b730)), closes [#493](https://github.com/rust-bio/rust-htslib/issues/493)
+* make the inner header pointer accessible again, although only through unsafe ([#504](https://github.com/rust-bio/rust-htslib/issues/504)) ([4dc0fba](https://github.com/rust-bio/rust-htslib/commit/4dc0fba181301287afb10a19ad26aaedb30fab7d))
+
+
+### Performance Improvements
+
+* **bam:** Remove unnecessary heap allocation in `Record::aux` ([#498](https://github.com/rust-bio/rust-htslib/issues/498)) ([9680bb4](https://github.com/rust-bio/rust-htslib/commit/9680bb4810cc670203ca9148393ef75dd60f9d48))
+
+## [0.51.0](https://github.com/rust-bio/rust-htslib/compare/v0.50.0...v0.51.0) (2025-10-15)
+
+
+### Features
+
+* Add support for updating existing aux tags inplace. ([#481](https://github.com/rust-bio/rust-htslib/issues/481)) ([f4a1106](https://github.com/rust-bio/rust-htslib/commit/f4a1106df49bde257b323d966fe4228b1a5ece15))
+
+## [0.50.0](https://github.com/rust-bio/rust-htslib/compare/v0.49.0...v0.50.0) (2025-07-09)
+
+
+### Features
+
+* Add bam::Record::set_cigar ([#477](https://github.com/rust-bio/rust-htslib/issues/477)) ([f1bb470](https://github.com/rust-bio/rust-htslib/commit/f1bb470d836e3cd8affae000f0fc14308f156c88))
+* Allow for non-diploid genotypes ([#476](https://github.com/rust-bio/rust-htslib/issues/476)) ([1c22ac5](https://github.com/rust-bio/rust-htslib/commit/1c22ac598edaa9fc1be354b857dc8f8f5c892984))
+
+
+### Bug Fixes
+
+* clippy and fmt after merging PR [#466](https://github.com/rust-bio/rust-htslib/issues/466) and [#467](https://github.com/rust-bio/rust-htslib/issues/467) ([141e01c](https://github.com/rust-bio/rust-htslib/commit/141e01c74aa3d087f4c2e7fe380d06b1e272865b))
+
 ## [0.49.0](https://github.com/rust-bio/rust-htslib/compare/v0.48.0...v0.49.0) (2024-12-02)
 
 

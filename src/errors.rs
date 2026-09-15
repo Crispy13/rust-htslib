@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::bam::record::Aux;
+
 /// Generic result type for functions in this crate with
 /// a global error class.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -26,6 +28,8 @@ pub enum Error {
     SetThreads,
     #[error("failed to create htslib thread pool")]
     ThreadPool,
+    // #[error("failed to make temp file")]
+    // TempFileError,
 
     #[error("failed to write BAM/BCF record (out of disk space?)")]
     WriteRecord,
@@ -91,6 +95,10 @@ pub enum Error {
     BamAuxUnknownType,
     #[error("failed to add aux field, tag is already present")]
     BamAuxTagAlreadyPresent,
+    #[error("updating the aux field for this datatype is not supported")]
+    BamAuxTagUpdatingNotSupported,
+    #[error("Aux type is not str: {0:?}")]
+    BamAuxTagNotStr(String),
 
     // Errors for base modification fields
     #[error("no base modification tag found for record")]
@@ -133,6 +141,8 @@ pub enum Error {
     BcfRemoveAlleles,
     #[error("failed to render BCF record as string")]
     BcfToString,
+    #[error("failed to translate BCF/VCF record")]
+    BcfTranslate,
 
     #[error("invalid compression level {level}")]
     BgzfInvalidCompressionLevel { level: i8 },

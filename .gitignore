@@ -6,3 +6,16 @@ Cargo.lock
 htslib/*
 test/out.bam
 test/test_index_build.bam.csi
+
+
+perf.data
+perf.data.old
+*.svg
+
+NA12878.*.bam
+built_test_vcf.tbx
+built_test.csi
+cmp.tsv
+hts-sys
+.github/instructions/default.instructions.md
+samtools

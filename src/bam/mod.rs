@@ -11,6 +11,8 @@ pub mod header;
 pub mod index;
 pub mod pileup;
 pub mod record;
+#[cfg(feature = "experimental")]
+pub mod sort;
 
 #[cfg(feature = "serde_feature")]
 pub mod record_serde;
@@ -21,9 +23,11 @@ use std::path::Path;
 use std::rc::Rc;
 use std::slice;
 use std::str;
+use std::sync::Arc;
 
 use url::Url;
 
+use crate::bam::pileup::PileupOption;
 use crate::errors::{Error, Result};
 use crate::htslib;
 use crate::tpool::ThreadPool;
@@ -250,7 +254,7 @@ pub trait Read: Sized {
 #[derive(Debug)]
 pub struct Reader {
     htsfile: *mut htslib::htsFile,
-    header: Rc<HeaderView>,
+    header: Arc<HeaderView>,
     tpool: Option<ThreadPool>,
 }
 
@@ -298,7 +302,7 @@ impl Reader {
 
         Ok(Reader {
             htsfile,
-            header: Rc::new(HeaderView::new(header)),
+            header: Arc::new(HeaderView::new(header)),
             tpool: None,
         })
     }
@@ -383,7 +387,7 @@ impl Read for Reader {
             -2 => Some(Err(Error::BamTruncatedRecord)),
             -4 => Some(Err(Error::BamInvalidRecord)),
             _ => {
-                record.set_header(Rc::clone(&self.header));
+                record.set_header(Arc::clone(&self.header));
 
                 Some(Ok(()))
             }
@@ -591,8 +595,8 @@ impl<'a, T: AsRef<[u8]>, X: Into<FetchCoordinate>, Y: Into<FetchCoordinate>> Fro
 #[derive(Debug)]
 pub struct IndexedReader {
     htsfile: *mut htslib::htsFile,
-    header: Rc<HeaderView>,
-    idx: Rc<IndexView>,
+    header: Arc<HeaderView>,
+    idx: Option<IndexView>,
     itr: Option<*mut htslib::hts_itr_t>,
     tpool: Option<ThreadPool>,
 }
@@ -637,8 +641,8 @@ impl IndexedReader {
         } else {
             Ok(IndexedReader {
                 htsfile,
-                header: Rc::new(HeaderView::new(header)),
-                idx: Rc::new(IndexView::new(idx)),
+                header: Arc::new(HeaderView::new(header)),
+                idx: Some(IndexView::new(idx)),
                 itr: None,
                 tpool: None,
             })
@@ -665,8 +669,8 @@ impl IndexedReader {
         } else {
             Ok(IndexedReader {
                 htsfile,
-                header: Rc::new(HeaderView::new(header)),
-                idx: Rc::new(IndexView::new(idx)),
+                header: Arc::new(HeaderView::new(header)),
+                idx: Some(IndexView::new(idx)),
                 itr: None,
                 tpool: None,
             })
@@ -811,7 +815,7 @@ impl IndexedReader {
     }
 
     pub fn index(&self) -> &IndexView {
-        &self.idx
+        self.idx.as_ref().unwrap()
     }
 
     // Analogous to slow_idxstats in samtools, see
@@ -845,8 +849,11 @@ impl IndexedReader {
                 return Err(Error::InvalidTid { tid });
             }
 
+            // Map unmapped reads (tid == -1) to the last slot (nref) to avoid usize wrapping.
+            let count_idx = if tid == -1 { nref } else { tid as usize };
+
             if tid != last_tid {
-                if (last_tid >= -1) && (counts[tid as usize][0] + counts[tid as usize][1]) > 0 {
+                if (last_tid >= -1) && (counts[count_idx][0] + counts[count_idx][1]) > 0 {
                     return Err(Error::BamUnsorted);
                 }
                 last_tid = tid;
@@ -857,7 +864,7 @@ impl IndexedReader {
             } else {
                 0
             };
-            counts[(*b).core.tid as usize][idx] += 1;
+            counts[count_idx][idx] += 1;
         }
 
         if ret == -1 {
@@ -903,20 +910,30 @@ impl IndexedReader {
             .chain([(-1, 0, 0, index.number_unmapped())])
             .collect::<_>())
     }
+
+    pub fn pileup_with_option(&mut self, option: PileupOption) -> pileup::Pileups<'_, Self> {
+        let _self = self as *const Self;
+        let itr = unsafe {
+            htslib::bam_plp_init(
+                Some(IndexedReader::pileup_read),
+                _self as *mut ::std::os::raw::c_void,
+            )
+        };
+        pileup::Pileups::with_option(self, itr, option)
+    }
 }
 
 #[derive(Debug)]
 pub struct IndexView {
     inner: *mut hts_sys::hts_idx_t,
-    owned: bool,
 }
+
+unsafe impl Send for IndexView {}
+unsafe impl Sync for IndexView {}
 
 impl IndexView {
     fn new(hts_idx: *mut hts_sys::hts_idx_t) -> Self {
-        Self {
-            inner: hts_idx,
-            owned: true,
-        }
+        Self { inner: hts_idx }
     }
 
     #[inline]
@@ -960,10 +977,8 @@ impl IndexView {
 
 impl Drop for IndexView {
     fn drop(&mut self) {
-        if self.owned {
-            unsafe {
-                htslib::hts_idx_destroy(self.inner);
-            }
+        unsafe {
+            htslib::hts_idx_destroy(self.inner);
         }
     }
 }
@@ -977,7 +992,7 @@ impl Read for IndexedReader {
                     -2 => Some(Err(Error::BamTruncatedRecord)),
                     -4 => Some(Err(Error::BamInvalidRecord)),
                     _ => {
-                        record.set_header(Rc::clone(&self.header));
+                        record.set_header(Arc::clone(&self.header));
 
                         Some(Ok(()))
                     }
@@ -1031,9 +1046,13 @@ impl Read for IndexedReader {
 impl Drop for IndexedReader {
     fn drop(&mut self) {
         unsafe {
-            if self.itr.is_some() {
-                htslib::hts_itr_destroy(self.itr.unwrap());
+            if let Some(itr) = self.itr.take() {
+                htslib::hts_itr_destroy(itr);
             }
+
+            // A CRAM index contains a pointer to the CRAM file handle.
+            // Destroy the index before hts_close frees that handle.
+            drop(self.idx.take());
             htslib::hts_close(self.htsfile);
         }
     }
@@ -1060,7 +1079,7 @@ impl Format {
 #[derive(Debug)]
 pub struct Writer {
     f: *mut htslib::htsFile,
-    header: Rc<HeaderView>,
+    header: Arc<HeaderView>,
     tpool: Option<ThreadPool>,
 }
 
@@ -1134,7 +1153,7 @@ impl Writer {
 
         Ok(Writer {
             f,
-            header: Rc::new(HeaderView::new(header_record)),
+            header: Arc::new(HeaderView::new(header_record)),
             tpool: None,
         })
     }
@@ -1364,8 +1383,10 @@ fn itr_next(
 #[derive(Debug)]
 pub struct HeaderView {
     inner: *mut htslib::bam_hdr_t,
-    owned: bool,
 }
+
+unsafe impl Send for HeaderView {}
+unsafe impl Sync for HeaderView {}
 
 impl HeaderView {
     /// Create a new HeaderView from a pre-populated Header object
@@ -1399,8 +1420,8 @@ impl HeaderView {
     }
 
     /// Create a new HeaderView from the underlying Htslib type, and own it.
-    pub fn new(inner: *mut htslib::bam_hdr_t) -> Self {
-        HeaderView { inner, owned: true }
+    fn new(inner: *mut htslib::bam_hdr_t) -> Self {
+        HeaderView { inner }
     }
 
     #[inline]
@@ -1428,15 +1449,16 @@ impl HeaderView {
     pub fn tid(&self, name: &[u8]) -> Option<u32> {
         let c_str = ffi::CString::new(name).expect("Expected valid name.");
         let tid = unsafe { htslib::sam_hdr_name2tid(self.inner, c_str.as_ptr()) };
-        if tid < 0 {
-            None
-        } else {
-            Some(tid as u32)
-        }
+        if tid < 0 { None } else { Some(tid as u32) }
     }
 
     pub fn tid2name(&self, tid: u32) -> &[u8] {
-        unsafe { ffi::CStr::from_ptr(htslib::sam_hdr_tid2name(self.inner, tid as i32)).to_bytes() }
+        let ptr = unsafe { htslib::sam_hdr_tid2name(self.inner, tid as i32) };
+        if ptr.is_null() {
+            b""
+        } else {
+            unsafe { ffi::CStr::from_ptr(ptr).to_bytes() }
+        }
     }
 
     pub fn target_count(&self) -> u32 {
@@ -1480,17 +1502,14 @@ impl Clone for HeaderView {
     fn clone(&self) -> Self {
         HeaderView {
             inner: unsafe { htslib::sam_hdr_dup(self.inner) },
-            owned: true,
         }
     }
 }
 
 impl Drop for HeaderView {
     fn drop(&mut self) {
-        if self.owned {
-            unsafe {
-                htslib::sam_hdr_destroy(self.inner);
-            }
+        unsafe {
+            htslib::sam_hdr_destroy(self.inner);
         }
     }
 }
@@ -1695,6 +1714,7 @@ CCCCCCCCCCCCCCCCCCC"[..],
             // fix qual offset
             let qual: Vec<u8> = quals[i].iter().map(|&q| q - 33).collect();
             assert_eq!(rec.qual(), &qual[..]);
+            assert_eq!(rec.aux(b"X"), Err(Error::BamAuxStringError));
             assert_eq!(rec.aux(b"NotAvailableAux"), Err(Error::BamAuxTagNotFound));
         }
 
@@ -1793,6 +1813,19 @@ CCCCCCCCCCCCCCCCCCC"[..],
     }
 
     #[test]
+    fn test_read_indexed_cram() {
+        let mut reader = IndexedReader::from_path("test/test_cram.cram").unwrap();
+        reader.set_reference("test/test_cram.fa").unwrap();
+        reader.fetch(("chr1", 0, 120)).unwrap();
+
+        let mut record = Record::new();
+        reader.read(&mut record).unwrap().unwrap();
+        assert_eq!(record.qname(), b"chr1.1");
+
+        drop(reader);
+    }
+
+    #[test]
     fn test_read_indexed_different_index_name() {
         let bam = IndexedReader::from_path_and_index(
             &"test/test_different_index_name.bam",
@@ -1819,6 +1852,21 @@ CCCCCCCCCCCCCCCCCCC"[..],
         assert_eq!(rec.qual(), quals[0]);
         assert!(rec.is_reverse());
         assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+    }
+
+    #[test]
+    fn test_forward_base_iter() {
+        let (names, _, seqs, quals, cigars) = gold();
+
+        let mut rec = record::Record::new();
+        rec.set(names[0], Some(&cigars[0]), seqs[0], quals[0]);
+        // note: this segfaults if you push_aux() before set()
+        //       because set() obliterates aux
+        rec.push_aux(b"NM", Aux::I32(15)).unwrap();
+
+        let bases = rec.forward_base_iter().take(4).collect::<Vec<u8>>();
+
+        assert_eq!(bases, b"CCTA");
     }
 
     #[test]
@@ -1934,6 +1982,67 @@ CCCCCCCCCCCCCCCCCCC"[..],
     }
 
     #[test]
+    fn test_set_cigar() {
+        let (names, _, seqs, quals, cigars) = gold();
+
+        assert!(names[0] != names[1]);
+
+        for i in 0..names.len() {
+            let mut rec = record::Record::new();
+            rec.set(names[i], Some(&cigars[i]), seqs[i], quals[i]);
+            rec.push_aux(b"NM", Aux::I32(15)).unwrap();
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(*rec.cigar(), cigars[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+
+            // boring cigar
+            let new_cigar = CigarString(vec![Cigar::Match(rec.seq_len() as u32)]);
+            assert_ne!(*rec.cigar(), new_cigar);
+            rec.set_cigar(Some(&new_cigar));
+            assert_eq!(*rec.cigar(), new_cigar);
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+
+            // bizarre cigar
+            let new_cigar = (0..rec.seq_len())
+                .map(|i| {
+                    if i % 2 == 0 {
+                        Cigar::Match(1)
+                    } else {
+                        Cigar::Ins(1)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let new_cigar = CigarString(new_cigar);
+            assert_ne!(*rec.cigar(), new_cigar);
+            rec.set_cigar(Some(&new_cigar));
+            assert_eq!(*rec.cigar(), new_cigar);
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+
+            // empty cigar
+            let new_cigar = CigarString(Vec::new());
+            assert_ne!(*rec.cigar(), new_cigar);
+            rec.set_cigar(None);
+            assert_eq!(*rec.cigar(), new_cigar);
+
+            assert_eq!(rec.qname(), names[i]);
+            assert_eq!(rec.seq().as_bytes(), seqs[i]);
+            assert_eq!(rec.qual(), quals[i]);
+            assert_eq!(rec.aux(b"NM").unwrap(), Aux::I32(15));
+        }
+    }
+
+    #[test]
     fn test_remove_aux() {
         let mut bam = Reader::from_path(Path::new("test/test.bam")).expect("Error opening file.");
 
@@ -1948,7 +2057,8 @@ CCCCCCCCCCCCCCCCCCC"[..],
                 rec.remove_aux(b"YT").unwrap();
             }
 
-            assert!(rec.remove_aux(b"ab").is_err());
+            assert_eq!(rec.remove_aux(b"X"), Err(Error::BamAuxStringError));
+            assert_eq!(rec.remove_aux(b"ab"), Err(Error::BamAuxTagNotFound));
 
             assert_eq!(rec.aux(b"XS"), Err(Error::BamAuxTagNotFound));
             assert_eq!(rec.aux(b"YT"), Err(Error::BamAuxTagNotFound));
@@ -2473,14 +2583,18 @@ CCCCCCCCCCCCCCCCCCC"[..],
         assert!(result);
         let mut expected = Vec::new();
         let mut written = Vec::new();
-        assert!(File::open(expectedfile)
-            .unwrap()
-            .read_to_end(&mut expected)
-            .is_ok());
-        assert!(File::open(samfile)
-            .unwrap()
-            .read_to_end(&mut written)
-            .is_ok());
+        assert!(
+            File::open(expectedfile)
+                .unwrap()
+                .read_to_end(&mut expected)
+                .is_ok()
+        );
+        assert!(
+            File::open(samfile)
+                .unwrap()
+                .read_to_end(&mut written)
+                .is_ok()
+        );
         assert_eq!(expected, written);
     }
 
@@ -3104,6 +3218,27 @@ CCCCCCCCCCCCCCCCCCC"[..],
         ];
         let actual = reader.index_stats().unwrap();
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_slow_idxstats_cram_unmapped() {
+        let mut reader = IndexedReader::from_path("test/test_cram_unmapped.cram").unwrap();
+        reader.set_reference("test/test_cram.fa").unwrap();
+        let expected = vec![
+            (0, 120, 2, 0),
+            (1, 120, 2, 0),
+            (2, 120, 2, 0),
+            (-1, 0, 0, 2),
+        ];
+        let actual = reader.index_stats().unwrap();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_nonexistent_tidname() {
+        let header = Header::new();
+        let header_view = HeaderView::from_header(&header);
+        assert_eq!(b"", header_view.tid2name(0));
     }
 
     // #[test]

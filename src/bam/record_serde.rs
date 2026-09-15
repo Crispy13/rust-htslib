@@ -316,7 +316,7 @@ mod tests {
 
     use std::path::Path;
 
-    use bincode::{deserialize, serialize};
+    use bincode;
     use serde_json;
 
     #[test]
@@ -328,8 +328,8 @@ mod tests {
             recs.push(record.unwrap());
         }
 
-        let encoded: Vec<u8> = serialize(&recs).unwrap();
-        let decoded: Vec<Record> = deserialize(&encoded[..]).unwrap();
+        let encoded: Vec<u8> = bincode::serde::encode_to_vec(&recs, bincode::config::legacy()).unwrap();
+        let decoded: Vec<Record> = bincode::serde::decode_from_slice(&encoded, bincode::config::legacy()).unwrap().0;
         assert_eq!(recs, decoded);
     }
 

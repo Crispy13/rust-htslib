@@ -48,6 +48,10 @@ impl Header {
         }
     }
 
+    pub(crate) fn records_mut(&mut self) -> &mut Vec<Vec<u8>> {
+        &mut self.records
+    }
+
     /// Add a record to the header.
     pub fn push_record(&mut self, record: &HeaderRecord<'_>) -> &mut Self {
         self.records.push(record.to_bytes());
@@ -106,7 +110,7 @@ impl Header {
     }
 
     /// Returns an iterator of comment lines.
-    pub fn comments(&self) -> impl Iterator<Item = Cow<str>> {
+    pub fn comments(&'_ self) -> impl Iterator<Item = Cow<'_, str>> {
         self.records.iter().flat_map(|r| {
             r.split(|x| x == &b'\n')
                 .filter(|x| x.starts_with(b"@CO\t"))
@@ -144,7 +148,7 @@ impl<'a> HeaderRecord<'a> {
         self
     }
 
-    fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend(self.rec_type.iter());
         for &(tag, ref value) in self.tags.iter() {
